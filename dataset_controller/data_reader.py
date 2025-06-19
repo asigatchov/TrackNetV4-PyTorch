@@ -8,7 +8,8 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
-from dataset_controller import *
+# Get the directory of the current script (data_reader.py)
+base_dir = Path(__file__).resolve().parent.parent  # Go up two levels to reach the project root
 
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
@@ -35,18 +36,21 @@ class BallTrackingDataset(Dataset):
                  video_ext: str = '.mp4',
                  csv_suffix: str = '_ball.csv',
                  normalize_coords: bool = False,
+                 normalize_pixels: bool = False,
                  _internal_data: Dict = None):
         """
         Args:
             match_folder: Path containing csv and video subfolders
             video_ext: Video file extension
             csv_suffix: CSV file suffix
-            normalize_coords: Whether to normalize coordinates to [0,1]
+            normalize_coords: Whether to normalize coordinates to [0,1] (default: False)
+            normalize_pixels: Whether to normalize pixel values to [0,1] (default: False)
             _internal_data: Internal use for dataset merging
         """
         self.video_ext = video_ext
         self.csv_suffix = csv_suffix
         self.normalize_coords = normalize_coords
+        self.normalize_pixels = normalize_pixels
 
         self._video_info_cache = {}
         self._label_cache = {}
@@ -256,8 +260,10 @@ class BallTrackingDataset(Dataset):
         video_info = self._get_video_info(pair['video_path'])
         label = self._get_frame_label(pair['csv_path'], frame_idx, video_info)
 
-        # Convert to tensor and normalize, then change from HWC to CHW format
-        frame_tensor = torch.from_numpy(frame).float() / 255.0  # (H, W, C)
+        # Convert to tensor and optionally normalize pixels, then change from HWC to CHW format
+        frame_tensor = torch.from_numpy(frame).float()  # (H, W, C)
+        if self.normalize_pixels:
+            frame_tensor = frame_tensor / 255.0
         frame_tensor = frame_tensor.permute(2, 0, 1)  # (H, W, C) -> (C, H, W)
 
         label_tensors = {
@@ -292,6 +298,10 @@ class BallTrackingDataset(Dataset):
         if self.normalize_coords != other.normalize_coords:
             raise ValueError(
                 f"Normalize coords settings don't match: {self.normalize_coords} vs {other.normalize_coords}")
+
+        if self.normalize_pixels != other.normalize_pixels:
+            raise ValueError(
+                f"Normalize pixels settings don't match: {self.normalize_pixels} vs {other.normalize_pixels}")
 
     def __add__(self, other: 'BallTrackingDataset') -> 'BallTrackingDataset':
         """
@@ -330,6 +340,7 @@ class BallTrackingDataset(Dataset):
             video_ext=self.video_ext,
             csv_suffix=self.csv_suffix,
             normalize_coords=self.normalize_coords,
+            normalize_pixels=self.normalize_pixels,
             _internal_data=internal_data
         )
 
@@ -353,5 +364,20 @@ class BallTrackingDataset(Dataset):
 
 # Usage example
 if __name__ == "__main__":
-    dataset1 = BallTrackingDataset('Dataset/Professional/match1', normalize_coords=True)
-    print(dataset1[0])
+    match_dir = base_dir / 'Dataset' / 'Professional' / 'match1'
+
+    # Example 1: Only coordinate normalization
+    dataset1 = BallTrackingDataset(str(match_dir), normalize_coords=True)
+    print("Dataset1 (only coords normalized):", dataset1[0])
+
+    # Example 2: No normalization (default behavior)
+    dataset2 = BallTrackingDataset(str(match_dir))
+    print("Dataset2 (no normalization - default):", dataset2[0])
+
+    # Example 3: Only pixel normalization
+    dataset3 = BallTrackingDataset(str(match_dir), normalize_pixels=True)
+    print("Dataset3 (only pixels normalized):", dataset3[0])
+
+    # Example 4: Both normalized
+    dataset4 = BallTrackingDataset(str(match_dir), normalize_coords=True, normalize_pixels=True)
+    print("Dataset4 (both normalized):", dataset4[0])
