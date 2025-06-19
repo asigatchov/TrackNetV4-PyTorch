@@ -8,7 +8,7 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
-# Get the directory of the current script (data_reader.py)
+# Get the directory of the current script (ball_tracking_data_reader.py)
 base_dir = Path(__file__).resolve().parent.parent  # Go up two levels to reach the project root
 
 logging.basicConfig(level=logging.WARNING)

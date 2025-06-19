@@ -3,7 +3,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import torch
-from data_reader import BallTrackingDataset
+from ball_tracking_data_reader import BallTrackingDataset
 
 # Locate the project root directory
 base_dir = Path(__file__).resolve().parent.parent
@@ -75,9 +75,14 @@ def play_dataset(dataset, delay_ms: int = 30):
 
 if __name__ == "__main__":
     # Initialize the dataset
-    match_dir = base_dir / 'Dataset' / 'Professional' / 'match2'
+    match_dir = base_dir / 'Dataset' / 'Professional' / 'match1'
     dataset1 = BallTrackingDataset(str(match_dir))
 
-    print(f"Dataset loaded: {len(dataset1)} frames")
+    match_dir = base_dir / 'Dataset' / 'Professional' / 'match2'
+    dataset2 = BallTrackingDataset(str(match_dir))
+
+    dataset = dataset1 + dataset2
+
+    print(f"Dataset loaded: {len(dataset)} frames")
     # Play the entire dataset as a video with 30 ms per frame
-    play_dataset(dataset1, delay_ms=30)
+    play_dataset(dataset, delay_ms=1)
