@@ -22,7 +22,7 @@ from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
 from dataset_controller.ball_tracking_data_reader import BallTrackingDataset
-from tracknet import TrackNet, WeightedBCELoss
+from tracknet import TrackNetV4, WeightedBCELoss
 
 # 默认配置
 DEFAULT_CONFIG = {
@@ -215,7 +215,7 @@ class Trainer:
 
     def setup_model(self):
         """初始化模型和优化器"""
-        self.model = TrackNet()
+        self.model = TrackNetV4()
         # MIMO输出
         self.model.conv2d_18 = nn.Conv2d(64, DATASET_CONFIG['output_frames'], 1)
 
@@ -368,7 +368,7 @@ class Trainer:
             'drop_last': True
         }
 
-        train_loader = DataLoader(train_dataset, shuffle=True, **data_kwargs)
+        train_loader = DataLoader(train_dataset, shuffle=False, **data_kwargs)
         val_loader = DataLoader(val_dataset, shuffle=False, **data_kwargs)
 
         self.logger.info(f"训练集: {len(train_dataset)}, 验证集: {len(val_dataset)}")
@@ -482,7 +482,7 @@ if __name__ == "__main__":
     main()
 
     """
-    新模型训练：python train.py --data_dir Dataset/Professional
+    新模型训练：python train.py --data_dir Dataset/Professional --save_dir checkpoints
     继续训练：python train.py --data_dir Dataset/Professional --resume checkpoints/latest.pth
     全参数训练：python train.py --data_dir Dataset/Professional --save_dir checkpoints --batch_size 2 --epochs 30 --lr 1.0 --weight_decay 0.0 --grad_clip 1.0 --save_interval 1
     """
