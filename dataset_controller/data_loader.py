@@ -46,7 +46,7 @@ def load_all_matches(professional_dir, config):
 # Usage
 if __name__ == "__main__":
     base_dir = Path(__file__).resolve().parent.parent
-    professional_dir = base_dir / 'Dataset' / 'Professional'
+    professional_dir = base_dir / 'dataset' / 'Professional'
 
     config_3in3out = {
         "input_frames": 3,

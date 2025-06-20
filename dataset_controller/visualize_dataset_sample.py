@@ -114,7 +114,7 @@ class ConfigurableDatasetViewer:
         :param delay_ms: 帧间延迟（毫秒）
         :param show_frame: 显示模式 ('center', 'all', 或帧索引)
         """
-        window_name = f"Dataset Viewer ({self.input_frames}in{self.output_frames}out) - q:quit, p:pause, a:all, 0-{self.input_frames - 1}:frame"
+        window_name = f"dataset Viewer ({self.input_frames}in{self.output_frames}out) - q:quit, p:pause, a:all, 0-{self.input_frames - 1}:frame"
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
 
         paused = False
@@ -229,7 +229,7 @@ class ConfigurableDatasetViewer:
         可视化单个样本，显示所有输入帧和标签信息
         """
         if sample_idx >= len(self.dataset):
-            print(f"Sample index {sample_idx} out of range. Dataset has {len(self.dataset)} samples.")
+            print(f"Sample index {sample_idx} out of range. dataset has {len(self.dataset)} samples.")
             return
 
         frames, labels = self.dataset[sample_idx]
@@ -312,7 +312,7 @@ def visualize_sample(dataset, sample_idx: int = 0):
 
 if __name__ == "__main__":
     # 测试不同配置
-    match_dir = base_dir / 'Dataset' / 'Professional' / 'match1'
+    match_dir = base_dir / 'dataset' / 'Professional' / 'match1'
 
     # 配置1：3进3出
     config_3in3out = {

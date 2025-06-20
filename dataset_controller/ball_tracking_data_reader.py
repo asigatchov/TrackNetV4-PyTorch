@@ -75,7 +75,7 @@ class BallTrackingDataset(Dataset):
                 raise ValueError("match_folder is required when not using _internal_data")
             self._init_from_folder(match_folder)
 
-        print(f"Dataset config: {self.input_frames} input frames -> {self.output_frames} output frames")
+        print(f"dataset config: {self.input_frames} input frames -> {self.output_frames} output frames")
 
     def _init_from_folder(self, match_folder: str):
         """Initialize dataset from folder"""
@@ -87,7 +87,7 @@ class BallTrackingDataset(Dataset):
         self.video_pairs = self._discover_pairs()
         self.frame_index = self._build_frame_index()
 
-        print(f"Dataset loaded: {len(self.video_pairs)} videos, {len(self.frame_index)} labeled frame sequences")
+        print(f"dataset loaded: {len(self.video_pairs)} videos, {len(self.frame_index)} labeled frame sequences")
 
     def _init_from_internal_data(self, data: Dict):
         """Initialize from internal data (for merging)"""
@@ -96,7 +96,7 @@ class BallTrackingDataset(Dataset):
         self._video_info_cache = data['video_info_cache']
         self._label_cache = data['label_cache']
 
-        print(f"Dataset merged: {len(self.video_pairs)} videos, {len(self.frame_index)} labeled frame sequences")
+        print(f"dataset merged: {len(self.video_pairs)} videos, {len(self.frame_index)} labeled frame sequences")
 
     def _validate_structure(self) -> None:
         """Validate folder structure"""
@@ -465,7 +465,7 @@ def create_heatmaps_from_labels(labels: List[Dict], image_shape: Tuple[int, int]
 
 # Usage examples
 if __name__ == "__main__":
-    match_dir = base_dir / 'Dataset' / 'Professional' / 'match1'
+    match_dir = base_dir / 'dataset' / 'Professional' / 'match1'
 
     # Example 1: 3 input frames -> 3 output frames (matched)
     config_3in3out = {
