@@ -107,7 +107,7 @@ class TrackNet(nn.Module):
 
 
 class WeightedBCELoss(nn.Module):
-    """Weighted Binary Cross Entropy Loss
+    """Weighted Binary Cross Entropy Loss - 严格按照论文表述
     WBCE = -∑[(1-w)²ŷlog(y) + w²(1-ŷ)log(1-y)] where w = ŷ
     """
 
@@ -115,10 +115,13 @@ class WeightedBCELoss(nn.Module):
         super(WeightedBCELoss, self).__init__()
 
     def forward(self, y_pred, y_true):
-        w = y_true.mean()
+        # 按照论文：w = ŷ (ground truth)
+        w = y_true
+
         epsilon = 1e-7
         y_pred = torch.clamp(y_pred, epsilon, 1 - epsilon)
 
+        # 严格按照论文公式实现
         term1 = (1 - w) ** 2 * y_true * torch.log(y_pred)
         term2 = w ** 2 * (1 - y_true) * torch.log(1 - y_pred)
 
