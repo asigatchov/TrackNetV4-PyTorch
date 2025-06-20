@@ -107,25 +107,20 @@ class TrackNet(nn.Module):
 
 
 class WeightedBCELoss(nn.Module):
-    """Weighted Binary Cross Entropy Loss - 严格按照论文表述
-    WBCE = -∑[(1-w)²ŷlog(y) + w²(1-ŷ)log(1-y)] where w = ŷ
-    """
-
     def __init__(self):
-        super(WeightedBCELoss, self).__init__()
+        super().__init__()
 
     def forward(self, y_pred, y_true):
-        # 按照论文：w = ŷ (ground truth)
-        w = y_true
+        eps = 1e-7
+        y_pred = torch.clamp(y_pred, eps, 1 - eps)
 
-        epsilon = 1e-7
-        y_pred = torch.clamp(y_pred, epsilon, 1 - epsilon)
+        w = y_pred.detach()        # w = 预测值，避免二阶梯度爆炸可 detach
+        loss = -(
+                (1 - w)**2 * y_true * torch.log(y_pred) +
+                w**2       * (1 - y_true) * torch.log(1 - y_pred)
+        ).mean()
+        return loss
 
-        # 严格按照论文公式实现
-        term1 = (1 - w) ** 2 * y_true * torch.log(y_pred)
-        term2 = w ** 2 * (1 - y_true) * torch.log(1 - y_pred)
-
-        return -(term1 + term2).mean()
 
 
 def postprocess_heatmap(heatmap, threshold=0.5):

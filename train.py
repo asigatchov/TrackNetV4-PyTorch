@@ -1,22 +1,21 @@
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader, Subset
-import torch.nn.functional as F
-import time
 import json
 import logging
-import warnings
+import time
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional, Union
+from typing import Dict, List, Tuple
+
 import matplotlib.pyplot as plt
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
-import numpy as np
 
-from tracknet import TrackNet, WeightedBCELoss
 from dataset_controller.ball_tracking_data_reader import BallTrackingDataset
+from tracknet import TrackNet, WeightedBCELoss
 
-# ======================== TrackNetV2 论文配置参数 ========================
+# ======================== 配置参数 ========================
 TRAINING_CONFIG = {
     "training": {
         "batch_size": 2,  # 根据论文，小批次保证稳定训练
@@ -85,8 +84,11 @@ def setup_logging(log_dir: Path, config_name: str) -> logging.Logger:
     """设置日志系统"""
     log_dir.mkdir(exist_ok=True)
 
-    logger = logging.getLogger(f'tracknetv2_{config_name}')
+    # 创建logger
+    logger = logging.getLogger(f'trainer_{config_name}')
     logger.setLevel(logging.INFO)
+
+    # 清除已存在的handlers
     logger.handlers.clear()
 
     # 文件handler
@@ -97,6 +99,7 @@ def setup_logging(log_dir: Path, config_name: str) -> logging.Logger:
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
 
+    # 格式设置
     formatter = logging.Formatter(
         '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
@@ -110,22 +113,20 @@ def setup_logging(log_dir: Path, config_name: str) -> logging.Logger:
 
 
 def get_device() -> torch.device:
-    """获取最佳可用设备，处理MPS兼容性"""
+    """获取最佳可用设备"""
     if torch.cuda.is_available():
         device = torch.device('cuda')
         device_name = torch.cuda.get_device_name()
         memory = torch.cuda.get_device_properties(0).total_memory / 1e9
-        print(f"✓ 使用CUDA设备: {device_name} ({memory:.1f}GB)")
-        return device
+        print(f"使用CUDA设备: {device_name} ({memory:.1f}GB)")
     elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
         device = torch.device('mps')
-        print("✓ 使用MPS设备 (Apple Silicon)")
-        print("  注意: MPS设备将自动禁用pin_memory和persistent_workers")
-        return device
+        print("使用MPS设备 (Apple Silicon)")
     else:
         device = torch.device('cpu')
-        print("✓ 使用CPU设备")
-        return device
+        print("使用CPU设备")
+
+    return device
 
 
 def load_all_matches(professional_dir: Path, config: Dict) -> BallTrackingDataset:
@@ -142,7 +143,6 @@ def load_all_matches(professional_dir: Path, config: Dict) -> BallTrackingDatase
     combined_dataset = None
     total_samples = 0
 
-    print(f"正在加载数据集...")
     for match_dir in match_dirs:
         try:
             dataset = BallTrackingDataset(str(match_dir), config=config)
@@ -152,14 +152,14 @@ def load_all_matches(professional_dir: Path, config: Dict) -> BallTrackingDatase
                 else:
                     combined_dataset = combined_dataset + dataset
                 total_samples += len(dataset)
-                print(f"  ✓ {match_dir.name}: {len(dataset)} 个样本")
+                print(f"✓ 已加载 {match_dir.name}: {len(dataset)} 个样本")
         except Exception as e:
-            print(f"  ✗ {match_dir.name} 加载失败: {e}")
+            print(f"✗ 加载 {match_dir.name} 失败: {e}")
 
     if combined_dataset is None:
         raise ValueError("没有成功加载任何数据集")
 
-    print(f"数据集加载完成，总计: {total_samples} 个样本")
+    print(f"总计加载: {total_samples} 个样本")
     return combined_dataset
 
 
@@ -167,8 +167,8 @@ def create_gaussian_heatmap(
         x: float, y: float, visibility: float,
         height: int, width: int, radius: float = 3.0
 ) -> torch.Tensor:
-    """按照论文创建高斯热图（实值2D数组而非one-hot编码）"""
-    heatmap = torch.zeros(height, width, dtype=torch.float32)
+    """创建高斯热图，优化版本"""
+    heatmap = torch.zeros(height, width)
 
     if visibility < 0.5:
         return heatmap
@@ -177,27 +177,22 @@ def create_gaussian_heatmap(
     x_pixel = max(0, min(width - 1, int(x * width)))
     y_pixel = max(0, min(height - 1, int(y * height)))
 
-    # 优化计算：仅在有效区域计算高斯值
+    # 计算影响范围，减少计算量
     kernel_size = int(3 * radius)
     x_min = max(0, x_pixel - kernel_size)
     x_max = min(width, x_pixel + kernel_size + 1)
     y_min = max(0, y_pixel - kernel_size)
     y_max = min(height, y_pixel + kernel_size + 1)
 
-    if x_max <= x_min or y_max <= y_min:
-        return heatmap
-
-    # 在有效区域生成高斯分布
+    # 仅在有效区域计算高斯值
     y_coords, x_coords = torch.meshgrid(
-        torch.arange(y_min, y_max, dtype=torch.float32),
-        torch.arange(x_min, x_max, dtype=torch.float32),
+        torch.arange(y_min, y_max),
+        torch.arange(x_min, x_max),
         indexing='ij'
     )
 
     dist_sq = (x_coords - x_pixel) ** 2 + (y_coords - y_pixel) ** 2
     gaussian_values = torch.exp(-dist_sq / (2 * radius ** 2))
-
-    # 论文中提到的阈值处理
     gaussian_values[gaussian_values < 0.01] = 0
 
     heatmap[y_min:y_max, x_min:x_max] = gaussian_values
@@ -206,7 +201,7 @@ def create_gaussian_heatmap(
 
 
 def collate_fn(batch: List[Tuple]) -> Tuple[torch.Tensor, torch.Tensor]:
-    """TrackNetV2数据整理函数"""
+    """优化的数据整理函数"""
     config = TRAINING_CONFIG["model"]
     target_height = config["input_height"]
     target_width = config["input_width"]
@@ -216,7 +211,7 @@ def collate_fn(batch: List[Tuple]) -> Tuple[torch.Tensor, torch.Tensor]:
     heatmaps_list = []
 
     for frames, labels in batch:
-        # 调整输入尺寸到论文指定的512×288
+        # 调整输入尺寸 - 使用更高效的插值
         frames = frames.unsqueeze(0)
         frames_resized = F.interpolate(
             frames,
@@ -228,9 +223,9 @@ def collate_fn(batch: List[Tuple]) -> Tuple[torch.Tensor, torch.Tensor]:
         frames_resized = frames_resized.squeeze(0)
         frames_list.append(frames_resized)
 
-        # 按照论文生成实值热图
+        # 生成热图
         num_frames = len(labels)
-        heatmaps = torch.zeros(num_frames, target_height, target_width, dtype=torch.float32)
+        heatmaps = torch.zeros(num_frames, target_height, target_width)
 
         for i, label_dict in enumerate(labels):
             if isinstance(label_dict, dict):
@@ -246,34 +241,6 @@ def collate_fn(batch: List[Tuple]) -> Tuple[torch.Tensor, torch.Tensor]:
         heatmaps_list.append(heatmaps)
 
     return torch.stack(frames_list), torch.stack(heatmaps_list)
-
-
-class WeightedBCELossV2(nn.Module):
-    """论文中的加权二值交叉熵损失函数"""
-
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
-        """
-        实现论文中的WBCE损失函数:
-        WBCE = -Σ[(1-w)²*y_true*log(y_pred) + w²*(1-y_true)*log(1-y_pred)]
-        其中 w = y_true (ground truth标签)
-        """
-        # 防止log(0)
-        eps = 1e-7
-        y_pred = torch.clamp(y_pred, eps, 1 - eps)
-
-        # 论文中的权重系数 w = y_true
-        w = y_true
-
-        # 计算加权交叉熵
-        term1 = (1 - w) ** 2 * y_true * torch.log(y_pred)
-        term2 = w ** 2 * (1 - y_true) * torch.log(1 - y_pred)
-
-        loss = -(term1 + term2)
-
-        return loss.mean()
 
 
 class EarlyStopping:
@@ -327,25 +294,22 @@ class MetricsTracker:
         }
 
 
-class TrackNetV2Trainer:
-    """TrackNetV2训练器（严格按照论文实现）"""
+class Trainer:
+    """优化的训练器类"""
 
     def __init__(self, config_name: str, config: Dict = None):
         self.config = config or TRAINING_CONFIG
         self.config_name = config_name
         self.device = get_device()
 
-        # 设置日志
-        self.logger = setup_logging(self.log_dir, config_name)
-
-        # 处理MPS设备特殊配置
-        self._configure_for_device()
-
         # 创建目录
         self.save_dir = Path(self.config["paths"]["save_dir"])
         self.log_dir = Path(self.config["paths"]["log_dir"])
         self.save_dir.mkdir(exist_ok=True)
         self.log_dir.mkdir(exist_ok=True)
+
+        # 设置日志
+        self.logger = setup_logging(self.log_dir, config_name)
 
         # 初始化组件
         self.metrics = MetricsTracker()
@@ -360,60 +324,37 @@ class TrackNetV2Trainer:
         # 保存配置
         self.save_config()
 
-        self.logger.info("TrackNetV2训练器初始化完成")
-        self.logger.info(f"设备: {self.device}")
-        self.logger.info(f"配置: {config_name}")
-
-    def _configure_for_device(self):
-        """根据设备类型配置参数"""
-        if self.device.type == 'mps':
-            # MPS设备不支持某些功能
-            self.config['data']['pin_memory'] = False
-            self.config['data']['persistent_workers'] = False
-            # 警告用户
-            warnings.filterwarnings("ignore", message=".*pin_memory.*MPS.*")
-            self.logger.info("MPS设备检测到，已自动禁用pin_memory和persistent_workers")
-        elif self.device.type == 'cuda':
-            # CUDA设备启用性能优化
-            self.config['data']['pin_memory'] = True
-            self.config['data']['persistent_workers'] = True
-            self.config['data']['num_workers'] = min(4, self.config['data']['num_workers'])
-
     def save_config(self):
         """保存训练配置"""
         config_path = self.log_dir / f'config_{self.config_name}.json'
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump({
                 'training_config': self.config,
-                'dataset_config': DATASET_CONFIGS[self.config_name],
-                'paper_reference': 'TrackNetV2: Efficient Shuttlecock Tracking Network (ICPAI 2020)'
+                'dataset_config': DATASET_CONFIGS[self.config_name]
             }, f, indent=2, ensure_ascii=False)
 
     def setup_model(self):
-        """按照论文设置模型和优化器"""
+        """设置模型和优化器"""
         dataset_config = DATASET_CONFIGS[self.config_name]
 
-        # 初始化TrackNet模型
+        # 初始化模型
         self.model = TrackNet()
-
-        # 根据输出帧数调整最后一层（MIMO设计）
         if dataset_config['output_frames'] != 3:
-            # 替换最后的卷积层以支持不同的输出帧数
             self.model.conv2d_18 = nn.Conv2d(64, dataset_config['output_frames'], 1)
 
         self.model = self.model.to(self.device)
 
-        # 模型参数统计
+        # 计算模型参数
         total_params = sum(p.numel() for p in self.model.parameters())
         trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
 
         self.logger.info(f"模型总参数: {total_params:,}")
         self.logger.info(f"可训练参数: {trainable_params:,}")
 
-        # 使用论文中的加权BCE损失
-        self.criterion = WeightedBCELossV2()
+        # 损失函数
+        self.criterion = WeightedBCELoss()
 
-        # 论文中使用Adadelta优化器，lr=1.0
+        # 优化器
         self.optimizer = optim.Adadelta(
             self.model.parameters(),
             lr=self.config['training']['learning_rate'],
@@ -426,13 +367,8 @@ class TrackNetV2Trainer:
             mode='min',
             factor=self.config['optimization']['scheduler_factor'],
             patience=self.config['optimization']['scheduler_patience'],
-            min_lr=self.config['optimization']['min_lr'],
-            verbose=True
+            min_lr=self.config['optimization']['min_lr']
         )
-
-        self.logger.info("模型设置完成")
-        self.logger.info(f"优化器: Adadelta (lr={self.config['training']['learning_rate']})")
-        self.logger.info(f"损失函数: 加权二值交叉熵 (WBCE)")
 
     def train_epoch(self, epoch: int, train_loader: DataLoader) -> float:
         """训练一个epoch"""
@@ -442,7 +378,7 @@ class TrackNetV2Trainer:
 
         progress_bar = tqdm(
             train_loader,
-            desc=f"训练 Epoch {epoch + 1}/{self.config['training']['num_epochs']}",
+            desc=f"训练 Epoch {epoch + 1}",
             leave=False
         )
 
@@ -453,11 +389,6 @@ class TrackNetV2Trainer:
             # 前向传播
             self.optimizer.zero_grad()
             outputs = self.model(inputs)
-
-            # 确保输出经过sigmoid激活（论文中强调）
-            if not hasattr(self.model, 'final_activation_applied'):
-                outputs = torch.sigmoid(outputs)
-
             loss = self.criterion(outputs, targets)
 
             # 反向传播
@@ -496,11 +427,6 @@ class TrackNetV2Trainer:
                 targets = targets.to(self.device, non_blocking=True)
 
                 outputs = self.model(inputs)
-
-                # 确保输出经过sigmoid激活
-                if not hasattr(self.model, 'final_activation_applied'):
-                    outputs = torch.sigmoid(outputs)
-
                 loss = self.criterion(outputs, targets)
                 total_loss += loss.item()
 
@@ -518,19 +444,18 @@ class TrackNetV2Trainer:
             'scheduler_state_dict': self.scheduler.state_dict(),
             'metrics': self.metrics.__dict__,
             'config_name': self.config_name,
-            'config': self.config,
-            'paper_info': 'TrackNetV2: Efficient Shuttlecock Tracking Network'
+            'config': self.config
         }
 
         # 保存最新模型
-        latest_path = self.save_dir / f'latest_tracknetv2_{self.config_name}.pth'
+        latest_path = self.save_dir / f'latest_{self.config_name}.pth'
         torch.save(checkpoint, latest_path)
 
         # 保存最佳模型
         if is_best:
-            best_path = self.save_dir / f'best_tracknetv2_{self.config_name}.pth'
+            best_path = self.save_dir / f'best_{self.config_name}.pth'
             torch.save(checkpoint, best_path)
-            self.logger.info(f"✓ 保存最佳模型! 验证损失: {self.metrics.best_val_loss:.6f}")
+            self.logger.info(f"保存最佳模型! 验证损失: {self.metrics.best_val_loss:.6f}")
 
     def plot_training_curves(self):
         """绘制训练曲线"""
@@ -538,7 +463,7 @@ class TrackNetV2Trainer:
             return
 
         fig, axes = plt.subplots(2, 2, figsize=(15, 10))
-        fig.suptitle(f'TrackNetV2训练过程 - {self.config_name}', fontsize=16)
+        fig.suptitle(f'TrackNet训练过程 - {self.config_name}', fontsize=16)
 
         epochs = range(1, len(self.metrics.train_losses) + 1)
 
@@ -547,8 +472,8 @@ class TrackNetV2Trainer:
         axes[0, 0].plot(epochs, self.metrics.val_losses, 'r-', label='验证损失', linewidth=2)
         axes[0, 0].axvline(x=self.metrics.best_epoch + 1, color='g', linestyle='--', alpha=0.7, label='最佳模型')
         axes[0, 0].set_xlabel('Epoch')
-        axes[0, 0].set_ylabel('WBCE Loss')
-        axes[0, 0].set_title('加权二值交叉熵损失')
+        axes[0, 0].set_ylabel('Loss')
+        axes[0, 0].set_title('训练和验证损失')
         axes[0, 0].legend()
         axes[0, 0].grid(True, alpha=0.3)
 
@@ -557,7 +482,7 @@ class TrackNetV2Trainer:
             axes[0, 1].plot(epochs, self.metrics.learning_rates, 'g-', linewidth=2)
             axes[0, 1].set_xlabel('Epoch')
             axes[0, 1].set_ylabel('Learning Rate')
-            axes[0, 1].set_title('Adadelta学习率变化')
+            axes[0, 1].set_title('学习率变化')
             axes[0, 1].set_yscale('log')
             axes[0, 1].grid(True, alpha=0.3)
 
@@ -569,28 +494,22 @@ class TrackNetV2Trainer:
             axes[1, 0].plot(recent_range, self.metrics.val_losses[-recent_epochs:], 'r-', label='验证', linewidth=2)
             axes[1, 0].set_xlabel('Epoch')
             axes[1, 0].set_ylabel('Loss')
-            axes[1, 0].set_title(f'最近{recent_epochs}轮进展')
+            axes[1, 0].set_title(f'最近{recent_epochs}轮')
             axes[1, 0].legend()
             axes[1, 0].grid(True, alpha=0.3)
 
-        # 收敛分析
-        if len(self.metrics.val_losses) > 5:
-            # 计算移动平均
-            window = min(5, len(self.metrics.val_losses))
-            moving_avg = np.convolve(self.metrics.val_losses, np.ones(window) / window, mode='valid')
-            moving_epochs = epochs[window - 1:]
-            axes[1, 1].plot(epochs, self.metrics.val_losses, 'r-', alpha=0.3, label='原始验证损失')
-            axes[1, 1].plot(moving_epochs, moving_avg, 'r-', linewidth=2, label=f'{window}点移动平均')
-            axes[1, 1].set_xlabel('Epoch')
-            axes[1, 1].set_ylabel('Validation Loss')
-            axes[1, 1].set_title('收敛分析')
-            axes[1, 1].legend()
-            axes[1, 1].grid(True, alpha=0.3)
+        # 损失差异
+        loss_diff = [abs(t - v) for t, v in zip(self.metrics.train_losses, self.metrics.val_losses)]
+        axes[1, 1].plot(epochs, loss_diff, 'purple', linewidth=2)
+        axes[1, 1].set_xlabel('Epoch')
+        axes[1, 1].set_ylabel('|Train Loss - Val Loss|')
+        axes[1, 1].set_title('训练验证损失差异')
+        axes[1, 1].grid(True, alpha=0.3)
 
         plt.tight_layout()
 
         # 保存图片
-        plot_path = self.log_dir / f'training_curves_tracknetv2_{self.config_name}.png'
+        plot_path = self.log_dir / f'training_curves_{self.config_name}.png'
         plt.savefig(plot_path, dpi=300, bbox_inches='tight')
         plt.close()
 
@@ -605,7 +524,7 @@ class TrackNetV2Trainer:
             shuffle=False,
             num_workers=data_config['num_workers'],
             collate_fn=collate_fn,
-            pin_memory=data_config['pin_memory'],
+            pin_memory=data_config['pin_memory'] and self.device.type in ['cuda', 'mps'],
             persistent_workers=data_config['persistent_workers'],
             drop_last=True
         )
@@ -616,23 +535,18 @@ class TrackNetV2Trainer:
             shuffle=False,
             num_workers=data_config['num_workers'],
             collate_fn=collate_fn,
-            pin_memory=data_config['pin_memory'],
+            pin_memory=data_config['pin_memory'] and self.device.type in ['cuda', 'mps'],
             persistent_workers=data_config['persistent_workers'],
             drop_last=True
         )
 
         # 记录训练信息
-        self.logger.info("=" * 60)
-        self.logger.info("开始TrackNetV2训练")
-        self.logger.info("=" * 60)
         self.logger.info(f"训练集大小: {len(train_dataset)}")
         self.logger.info(f"验证集大小: {len(val_dataset)}")
         self.logger.info(f"训练批次数: {len(train_loader)}")
         self.logger.info(f"验证批次数: {len(val_loader)}")
         self.logger.info(f"设备: {self.device}")
         self.logger.info(f"配置: {self.config_name}")
-        self.logger.info(f"输入尺寸: {self.config['model']['input_width']}×{self.config['model']['input_height']}")
-        self.logger.info(f"目标epoch数: {self.config['training']['num_epochs']}")
 
         start_time = time.time()
 
@@ -653,10 +567,8 @@ class TrackNetV2Trainer:
             # 计算epoch时间
             epoch_time = time.time() - epoch_start_time
 
-            # 检查是否是最佳模型
-            is_best = val_loss < self.metrics.best_val_loss
-
             # 记录进度
+            is_best = val_loss < self.metrics.best_val_loss
             self.logger.info(
                 f"Epoch {epoch + 1:3d}/{self.config['training']['num_epochs']}: "
                 f"训练={train_loss:.6f}, 验证={val_loss:.6f}, "
@@ -683,18 +595,11 @@ class TrackNetV2Trainer:
         summary = self.metrics.get_summary()
 
         self.logger.info("=" * 60)
-        self.logger.info("TrackNetV2训练完成!")
-        self.logger.info("=" * 60)
+        self.logger.info("训练完成!")
         self.logger.info(f"总用时: {total_time / 3600:.2f} 小时")
         self.logger.info(f"最佳验证损失: {summary['best_val_loss']:.6f} (Epoch {summary['best_epoch'] + 1})")
         self.logger.info(f"最终训练损失: {summary['final_train_loss']:.6f}")
         self.logger.info(f"最终验证损失: {summary['final_val_loss']:.6f}")
-
-        # 论文性能对比信息
-        self.logger.info("\n论文TrackNetV2性能指标:")
-        self.logger.info("- 训练集: 准确率96.3%, 精确度97.0%, 召回率98.7%")
-        self.logger.info("- 测试集: 准确率85.2%, 精确度97.2%, 召回率85.4%")
-        self.logger.info("- 处理速度: 31.84 FPS (3-in-3-out)")
         self.logger.info("=" * 60)
 
         # 最终保存
@@ -706,42 +611,33 @@ class TrackNetV2Trainer:
 
 def main():
     """主函数"""
-    print("=" * 70)
-    print("TrackNetV2: Efficient Shuttlecock Tracking Network")
-    print("基于论文: TrackNetV2 (ICPAI 2020)")
-    print("=" * 70)
+    print("=" * 60)
+    print("TrackNet 球追踪模型训练程序")
+    print("=" * 60)
 
     # 获取数据集路径
     base_dir = Path(__file__).resolve().parent
     professional_dir = base_dir / 'Dataset' / 'Professional'
 
     if not professional_dir.exists():
-        print(f"❌ 错误: 数据集目录不存在: {professional_dir}")
+        print(f"错误: 数据集目录不存在: {professional_dir}")
         return
 
     # 选择配置
-    print("\n可用配置 (基于论文设计):")
-    print("1. 3in3out: MIMO设计 - 3输入帧 -> 3输出帧 (论文推荐，性能最佳)")
-    print("2. 3in1out: MISO设计 - 3输入帧 -> 1输出帧 (传统设计对比)")
+    print("\n可用配置:")
+    for i, (key, config) in enumerate(DATASET_CONFIGS.items(), 1):
+        print(f"{i}. {key}: {config['input_frames']}输入帧 -> {config['output_frames']}输出帧")
 
     while True:
         try:
-            choice = input(f"\n请选择配置 (1-2): ").strip()
-            if choice == "1":
-                config_name = "3in3out"
-                break
-            elif choice == "2":
-                config_name = "3in1out"
-                break
-            else:
-                print("无效输入，请输入1或2")
-        except KeyboardInterrupt:
-            print("\n训练取消")
-            return
+            choice = input(f"\n请选择配置 (1-{len(DATASET_CONFIGS)}): ").strip()
+            config_idx = int(choice) - 1
+            config_name = list(DATASET_CONFIGS.keys())[config_idx]
+            break
+        except (ValueError, IndexError):
+            print("无效输入，请重试")
 
-    print(f"\n✓ 已选择配置: {config_name}")
-    if config_name == "3in3out":
-        print("  📊 MIMO设计将显著提升处理速度（论文中从2.6 FPS提升到31.8 FPS）")
+    print(f"\n已选择配置: {config_name}")
 
     try:
         # 加载数据集
@@ -754,7 +650,7 @@ def main():
         train_size = int(TRAINING_CONFIG['data']['train_split'] * total_size)
         val_size = total_size - train_size
 
-        # 创建随机分割
+        # 创建随机分割的索引
         indices = torch.randperm(total_size).tolist()
         train_indices = indices[:train_size]
         val_indices = indices[train_size:]
@@ -762,24 +658,21 @@ def main():
         train_dataset = Subset(full_dataset, train_indices)
         val_dataset = Subset(full_dataset, val_indices)
 
-        print(f"\n✓ 数据集分割完成:")
-        print(f"  训练集: {len(train_dataset)} 样本 ({len(train_dataset) / total_size:.1%})")
-        print(f"  验证集: {len(val_dataset)} 样本 ({len(val_dataset) / total_size:.1%})")
-        print(f"  论文数据集: 55,563帧来自18个羽毛球比赛视频")
+        print(f"\n数据集分割完成:")
+        print(f"  训练集: {len(train_dataset)} 样本")
+        print(f"  验证集: {len(val_dataset)} 样本")
+        print(f"  分割比例: {len(train_dataset) / total_size:.1%} / {len(val_dataset) / total_size:.1%}")
 
-        # 初始化训练器
-        print(f"\n正在初始化TrackNetV2训练器...")
-        trainer = TrackNetV2Trainer(config_name)
+        # 开始训练
+        print(f"\n初始化训练器...")
+        trainer = Trainer(config_name)
 
-        print(f"\n🚀 开始训练...")
+        print(f"\n开始训练...")
         summary = trainer.train(train_dataset, val_dataset)
 
-        print(f"\n✅ 训练成功完成!")
-        print(f"📁 最佳模型保存在: {trainer.save_dir / f'best_tracknetv2_{config_name}.pth'}")
-        print(f"📊 训练日志保存在: {trainer.log_dir}")
+        print(f"\n✓ 训练成功完成!")
+        print(f"最佳模型保存在: {trainer.save_dir / f'best_{config_name}.pth'}")
 
-    except KeyboardInterrupt:
-        print(f"\n⏹ 训练被用户中断")
     except Exception as e:
         print(f"\n❌ 训练过程中发生错误: {e}")
         import traceback
