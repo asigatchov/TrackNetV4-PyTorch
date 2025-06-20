@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
-TrackNetV2 羽毛球追踪网络训练脚本 - 支持强制结束时自动保存
-- 支持CUDA/MPS/CPU自动选择
-- 支持从头训练和断点续训
-- MIMO设计，每epoch自动保存
-- 强制结束时自动保存当前模型
+TrackNetV4 Badminton Tracking Network Training Script
+- Supports CUDA/MPS/CPU automatic selection
+- Supports training from scratch and resume from checkpoint
+- MIMO design with automatic saving per epoch
+- Auto-save on forced termination with signal handling
+- Optimized plotting strategy: only plot when saving
+- Early directory structure setup
 """
 
 import argparse
@@ -28,10 +30,10 @@ from tqdm import tqdm
 from dataset_controller.ball_tracking_data_reader import BallTrackingDataset
 from tracknet import TrackNetV4, WeightedBCELoss
 
-# 全局变量，用于信号处理
+# Global variable for signal handling
 _trainer_instance = None
 
-# 默认配置
+# Default configuration
 DEFAULT_CONFIG = {
     "batch_size": 2,
     "num_epochs": 30,
@@ -47,12 +49,12 @@ DEFAULT_CONFIG = {
     "scheduler_patience": 8,
     "early_stop_patience": 15,
     "train_split": 0.8,
-    "save_interval": 1,  # 每epoch保存
+    "save_interval": 1,  # Save every epoch
 }
 
 DATASET_CONFIG = {
     "input_frames": 3,
-    "output_frames": 3,  # MIMO设计
+    "output_frames": 3,  # MIMO design
     "normalize_coords": True,
     "normalize_pixels": True,
     "video_ext": ".mp4",
@@ -60,8 +62,32 @@ DATASET_CONFIG = {
 }
 
 
+def setup_directories(save_dir):
+    """Setup all required directories at script startup"""
+    save_path = Path(save_dir)
+
+    # Create main save directory
+    save_path.mkdir(parents=True, exist_ok=True)
+
+    # Create subdirectories for different types of saves
+    checkpoints_dir = save_path / "checkpoints"
+    plots_dir = save_path / "plots"
+    logs_dir = save_path / "logs"
+
+    checkpoints_dir.mkdir(exist_ok=True)
+    plots_dir.mkdir(exist_ok=True)
+    logs_dir.mkdir(exist_ok=True)
+
+    print(f"✓ Directory structure created: {save_path}")
+    print(f"  - Checkpoints: {checkpoints_dir}")
+    print(f"  - Plots: {plots_dir}")
+    print(f"  - Logs: {logs_dir}")
+
+    return save_path, checkpoints_dir, plots_dir, logs_dir
+
+
 def signal_handler(signum, frame):
-    """信号处理函数 - 处理Ctrl+C等强制结束信号"""
+    """Signal handler for graceful termination on Ctrl+C or SIGTERM"""
     global _trainer_instance
 
     signal_names = {
@@ -70,48 +96,49 @@ def signal_handler(signum, frame):
     }
 
     signal_name = signal_names.get(signum, f"Signal {signum}")
-    print(f"\n⚠️  收到{signal_name}信号，正在安全保存模型...")
+    print(f"\n⚠️  Received {signal_name} signal, safely saving model and plots...")
 
     if _trainer_instance is not None:
         try:
-            # 保存紧急检查点
-            emergency_path = _trainer_instance.save_dir / f'emergency_save_epoch_{_trainer_instance.current_epoch:03d}.pth'
+            # Save emergency checkpoint with model state and training plots
+            emergency_path = _trainer_instance.checkpoints_dir / f'emergency_save_epoch_{_trainer_instance.current_epoch:03d}.pth'
             _trainer_instance.save_emergency_checkpoint(emergency_path)
-            print(f"✓ 紧急保存完成: {emergency_path}")
+            print(f"✓ Emergency save completed: {emergency_path}")
+            print(f"✓ Training plots updated")
         except Exception as e:
-            print(f"❌ 紧急保存失败: {e}")
+            print(f"❌ Emergency save failed: {e}")
 
-    print("🔄 进程安全退出")
+    print("🔄 Process exiting safely")
     sys.exit(0)
 
 
 def cleanup_on_exit():
-    """程序退出时的清理函数"""
+    """Cleanup function called on program exit"""
     global _trainer_instance
     if _trainer_instance is not None and hasattr(_trainer_instance, 'training_in_progress'):
         if _trainer_instance.training_in_progress:
-            print("\n🔄 程序正常退出，执行最后保存...")
+            print("\n🔄 Program exiting normally, performing final save...")
             try:
-                exit_path = _trainer_instance.save_dir / f'exit_save_epoch_{_trainer_instance.current_epoch:03d}.pth'
+                exit_path = _trainer_instance.checkpoints_dir / f'exit_save_epoch_{_trainer_instance.current_epoch:03d}.pth'
                 _trainer_instance.save_emergency_checkpoint(exit_path)
-                print(f"✓ 退出保存完成: {exit_path}")
+                print(f"✓ Exit save completed: {exit_path}")
             except Exception as e:
-                print(f"❌ 退出保存失败: {e}")
+                print(f"❌ Exit save failed: {e}")
 
 
 def get_device_and_config():
-    """自动选择最佳设备"""
+    """Automatically select the best available device"""
     if torch.cuda.is_available():
         device = torch.device('cuda')
         config = {"num_workers": 4, "pin_memory": True, "persistent_workers": True}
         print(f"✓ CUDA: {torch.cuda.get_device_name()}")
 
-        # 根据显存调整批次
+        # Adjust batch size based on GPU memory
         memory_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
         if memory_gb < 8:
             config["batch_multiplier"] = 0.5
 
-        # CUDA优化
+        # CUDA optimizations
         torch.backends.cudnn.benchmark = True
         torch.backends.cudnn.deterministic = False
 
@@ -123,13 +150,13 @@ def get_device_and_config():
     else:
         device = torch.device('cpu')
         config = {"num_workers": 4, "pin_memory": False, "persistent_workers": True}
-        print("⚠️ CPU模式")
+        print("⚠️ CPU mode")
 
     return device, config
 
 
 def init_weights(m):
-    """权重初始化 - 按论文要求使用uniform"""
+    """Initialize weights using uniform distribution as per paper requirements"""
     if isinstance(m, nn.Conv2d):
         nn.init.uniform_(m.weight)
         if m.bias is not None:
@@ -140,7 +167,7 @@ def init_weights(m):
 
 
 def create_gaussian_heatmap(x, y, visibility, height, width, radius=3.0):
-    """生成高斯热图"""
+    """Generate Gaussian heatmap for ball position"""
     heatmap = torch.zeros(height, width)
     if visibility < 0.5:
         return heatmap
@@ -167,12 +194,12 @@ def create_gaussian_heatmap(x, y, visibility, height, width, radius=3.0):
 
 
 def collate_fn(batch):
-    """数据批处理"""
+    """Custom collate function for batch processing"""
     config = DEFAULT_CONFIG
     frames_list, heatmaps_list = [], []
 
     for frames, labels in batch:
-        # 调整输入尺寸
+        # Resize input frames
         frames = F.interpolate(
             frames.unsqueeze(0),
             size=(config["input_height"], config["input_width"]),
@@ -181,7 +208,7 @@ def collate_fn(batch):
         ).squeeze(0)
         frames_list.append(frames)
 
-        # 生成热图
+        # Generate heatmaps
         heatmaps = torch.zeros(len(labels), config["input_height"], config["input_width"])
         for i, label_dict in enumerate(labels):
             if isinstance(label_dict, dict):
@@ -200,12 +227,12 @@ def collate_fn(batch):
 
 
 def load_dataset(data_dir):
-    """加载数据集"""
+    """Load and combine datasets from multiple match directories"""
     data_dir = Path(data_dir)
     match_dirs = sorted([d for d in data_dir.iterdir() if d.is_dir() and d.name.startswith('match')])
 
     if not match_dirs:
-        raise ValueError(f"未找到match文件夹: {data_dir}")
+        raise ValueError(f"No match directories found in: {data_dir}")
 
     combined_dataset = None
     for match_dir in match_dirs:
@@ -213,68 +240,78 @@ def load_dataset(data_dir):
             dataset = BallTrackingDataset(str(match_dir), config=DATASET_CONFIG)
             if len(dataset) > 0:
                 combined_dataset = dataset if combined_dataset is None else combined_dataset + dataset
-                print(f"✓ {match_dir.name}: {len(dataset)} 样本")
+                print(f"✓ {match_dir.name}: {len(dataset)} samples")
         except Exception as e:
-            print(f"✗ {match_dir.name} 加载失败: {e}")
+            print(f"✗ {match_dir.name} loading failed: {e}")
 
     if combined_dataset is None:
-        raise ValueError("无可用数据集")
+        raise ValueError("No usable datasets found")
 
-    print(f"总计: {len(combined_dataset)} 样本")
+    print(f"Total: {len(combined_dataset)} samples")
     return combined_dataset
 
 
 class Trainer:
-    def __init__(self, args, device, device_config):
+    def __init__(self, args, device, device_config, save_dir, checkpoints_dir, plots_dir, logs_dir):
         self.args = args
         self.device = device
         self.device_config = device_config
 
-        # 创建目录
-        self.save_dir = Path(args.save_dir)
-        self.save_dir.mkdir(exist_ok=True)
+        # Directory structure
+        self.save_dir = save_dir
+        self.checkpoints_dir = checkpoints_dir
+        self.plots_dir = plots_dir
+        self.logs_dir = logs_dir
 
-        # 训练状态追踪
+        # Training state tracking
         self.current_epoch = 0
         self.current_batch = 0
         self.training_in_progress = False
 
-        # 设置日志
+        # Setup logging
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s',
             handlers=[
-                logging.FileHandler(self.save_dir / 'training.log'),
+                logging.FileHandler(self.logs_dir / 'training.log'),
                 logging.StreamHandler()
             ]
         )
         self.logger = logging.getLogger(__name__)
 
-        # 训练状态
+        # Training state
         self.start_epoch = 0
         self.best_loss = float('inf')
+
+        # Epoch-level metrics (for compatibility)
         self.train_losses = []
         self.val_losses = []
         self.learning_rates = []
 
-        # 初始化模型
+        # Batch-level metrics (for detailed plotting)
+        self.batch_train_losses = []
+        self.batch_numbers = []
+        self.epoch_boundaries = []  # Record batch positions at epoch end
+        self.total_batches = 0
+
+        # Initialize model
         self.setup_model()
 
-        # 加载检查点
+        # Load checkpoint if resuming
         if args.resume:
             self.load_checkpoint(args.resume)
 
     def setup_model(self):
-        """初始化模型和优化器"""
+        """Initialize model and optimizer"""
         self.model = TrackNetV4()
-        # MIMO输出
+        # MIMO output
         self.model.conv2d_18 = nn.Conv2d(64, DATASET_CONFIG['output_frames'], 1)
 
-        # 权重初始化
+        # Weight initialization
         self.model.apply(init_weights)
         self.model = self.model.to(self.device)
 
-        # 损失函数和优化器
+        # Loss function and optimizer
         self.criterion = WeightedBCELoss()
         self.optimizer = optim.Adadelta(
             self.model.parameters(),
@@ -287,62 +324,109 @@ class Trainer:
             patience=DEFAULT_CONFIG["scheduler_patience"]
         )
 
-        # 统计参数
+        # Count parameters
         total_params = sum(p.numel() for p in self.model.parameters())
-        self.logger.info(f"模型参数: {total_params:,}")
+        self.logger.info(f"Model parameters: {total_params:,}")
 
     def save_checkpoint(self, epoch, is_best=False, checkpoint_type="regular"):
-        """保存检查点"""
+        """Save checkpoint and plot training curves when saving"""
         checkpoint = {
             'epoch': epoch,
             'current_batch': self.current_batch,
+            'total_batches': self.total_batches,
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict(),
             'best_loss': self.best_loss,
+
+            # Epoch-level data
             'train_losses': self.train_losses,
             'val_losses': self.val_losses,
             'learning_rates': self.learning_rates,
+
+            # Batch-level data
+            'batch_train_losses': self.batch_train_losses,
+            'batch_numbers': self.batch_numbers,
+            'epoch_boundaries': self.epoch_boundaries,
+
             'config': vars(self.args),
             'checkpoint_type': checkpoint_type,
             'save_time': time.time()
         }
 
-        # 保存最新
-        torch.save(checkpoint, self.save_dir / f'epoch_{epoch:03d}.pth')
-        torch.save(checkpoint, self.save_dir / 'latest.pth')
+        # Save latest
+        torch.save(checkpoint, self.checkpoints_dir / f'epoch_{epoch:03d}.pth')
+        torch.save(checkpoint, self.checkpoints_dir / 'latest.pth')
 
-        # 保存最佳
+        # Save best
         if is_best:
-            torch.save(checkpoint, self.save_dir / 'best.pth')
-            self.logger.info(f"✓ 最佳模型 Epoch {epoch}: {self.best_loss:.6f}")
+            torch.save(checkpoint, self.checkpoints_dir / 'best.pth')
+            self.logger.info(f"✓ Best model Epoch {epoch}: {self.best_loss:.6f}")
+
+        # Plot training curves when saving
+        try:
+            if len(self.batch_train_losses) > 0:
+                self.plot_curves(epoch)
+                self.logger.info(f"✓ Training curves updated")
+        except Exception as e:
+            self.logger.warning(f"⚠️ Failed to generate training curves: {e}")
 
     def save_emergency_checkpoint(self, save_path):
-        """保存紧急检查点"""
+        """Save emergency checkpoint including model state and training plots"""
         checkpoint = {
             'epoch': self.current_epoch,
             'current_batch': self.current_batch,
+            'total_batches': self.total_batches,
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict(),
             'best_loss': self.best_loss,
+
+            # Epoch-level data
             'train_losses': self.train_losses,
             'val_losses': self.val_losses,
             'learning_rates': self.learning_rates,
+
+            # Batch-level data
+            'batch_train_losses': self.batch_train_losses,
+            'batch_numbers': self.batch_numbers,
+            'epoch_boundaries': self.epoch_boundaries,
+
             'config': vars(self.args),
             'checkpoint_type': "emergency",
             'save_time': time.time()
         }
 
+        # Save model checkpoint
         torch.save(checkpoint, save_path)
-        # 同时保存为最新检查点
-        torch.save(checkpoint, self.save_dir / 'latest.pth')
+        # Also save as latest checkpoint
+        torch.save(checkpoint, self.checkpoints_dir / 'latest.pth')
+
+        # Generate training curves during emergency save
+        try:
+            if len(self.batch_train_losses) > 0:  # Ensure batch data exists for plotting
+                self.plot_curves(self.current_epoch)
+                self.logger.info(f"✓ Training curves saved")
+        except Exception as e:
+            self.logger.warning(f"⚠️ Failed to generate training curves: {e}")
+
+        # Log detailed emergency save information
+        self.logger.info(f"📊 Emergency save details:")
+        self.logger.info(f"   - Model checkpoint: {save_path}")
+        self.logger.info(f"   - Current Epoch: {self.current_epoch}")
+        self.logger.info(f"   - Current Batch: {self.current_batch}")
+        self.logger.info(f"   - Total Batches: {self.total_batches}")
+        if len(self.batch_train_losses) > 0:
+            self.logger.info(f"   - Latest training loss: {self.batch_train_losses[-1]:.6f}")
+        if len(self.val_losses) > 0:
+            self.logger.info(f"   - Latest validation loss: {self.val_losses[-1]:.6f}")
+        self.logger.info(f"   - Best validation loss: {self.best_loss:.6f}")
 
     def load_checkpoint(self, checkpoint_path):
-        """加载检查点"""
+        """Load checkpoint from file"""
         checkpoint_path = Path(checkpoint_path)
         if not checkpoint_path.exists():
-            self.logger.warning(f"检查点不存在: {checkpoint_path}")
+            self.logger.warning(f"Checkpoint does not exist: {checkpoint_path}")
             return
 
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
@@ -353,19 +437,27 @@ class Trainer:
 
         self.start_epoch = checkpoint['epoch'] + 1
         self.best_loss = checkpoint['best_loss']
+
+        # Load epoch-level data
         self.train_losses = checkpoint['train_losses']
         self.val_losses = checkpoint['val_losses']
         self.learning_rates = checkpoint['learning_rates']
 
-        # 如果是紧急保存的检查点，显示特殊信息
+        # Load batch-level data (backward compatibility)
+        self.batch_train_losses = checkpoint.get('batch_train_losses', [])
+        self.batch_numbers = checkpoint.get('batch_numbers', [])
+        self.epoch_boundaries = checkpoint.get('epoch_boundaries', [])
+        self.total_batches = checkpoint.get('total_batches', 0)
+
+        # Display special info for emergency checkpoints
         checkpoint_type = checkpoint.get('checkpoint_type', 'regular')
         if checkpoint_type == 'emergency':
-            self.logger.info(f"✓ 从紧急保存的检查点恢复: Epoch {self.start_epoch}")
+            self.logger.info(f"✓ Resumed from emergency checkpoint: Epoch {self.start_epoch}, Total Batch {self.total_batches}")
         else:
-            self.logger.info(f"✓ 从Epoch {self.start_epoch}继续训练")
+            self.logger.info(f"✓ Continuing from Epoch {self.start_epoch}, Total Batch {self.total_batches}")
 
     def train_epoch(self, epoch, train_loader):
-        """训练一个epoch"""
+        """Train one epoch"""
         self.model.train()
         total_loss = 0.0
         self.current_epoch = epoch
@@ -373,6 +465,7 @@ class Trainer:
         pbar = tqdm(train_loader, desc=f"Epoch {epoch:03d}")
         for batch_idx, (inputs, targets) in enumerate(pbar):
             self.current_batch = batch_idx
+            self.total_batches += 1
 
             inputs = inputs.to(self.device, non_blocking=True)
             targets = targets.to(self.device, non_blocking=True)
@@ -382,24 +475,33 @@ class Trainer:
             loss = self.criterion(outputs, targets)
             loss.backward()
 
-            # 梯度裁剪
+            # Gradient clipping
             if self.args.grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.grad_clip)
 
             self.optimizer.step()
 
             total_loss += loss.item()
-            pbar.set_postfix({'Loss': f'{loss.item():.6f}'})
+
+            # Record batch-level loss
+            self.batch_train_losses.append(loss.item())
+            self.batch_numbers.append(self.total_batches)
+
+            # Update progress bar display without plotting
+            pbar.set_postfix({'Loss': f'{loss.item():.6f}', 'Batch': self.total_batches})
+
+        # Record epoch end position
+        self.epoch_boundaries.append(self.total_batches)
 
         return total_loss / len(train_loader)
 
     def validate(self, val_loader):
-        """验证"""
+        """Validation phase"""
         self.model.eval()
         total_loss = 0.0
 
         with torch.no_grad():
-            for inputs, targets in tqdm(val_loader, desc="验证"):
+            for inputs, targets in tqdm(val_loader, desc="Validation"):
                 inputs = inputs.to(self.device, non_blocking=True)
                 targets = targets.to(self.device, non_blocking=True)
 
@@ -410,41 +512,58 @@ class Trainer:
         return total_loss / len(val_loader)
 
     def plot_curves(self, epoch):
-        """绘制训练曲线"""
-        if len(self.train_losses) < 2:
+        """Plot training curves - comprehensive batch-level and epoch-level charts"""
+        if len(self.batch_train_losses) < 2:
             return
 
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
 
-        epochs = range(1, len(self.train_losses) + 1)
+        # Left plot: batch-level training loss curve
+        if len(self.batch_train_losses) > 0:
+            ax1.plot(self.batch_numbers, self.batch_train_losses, 'b-', alpha=0.7, linewidth=1, label='Training Loss (batch)')
 
-        # 损失曲线
-        ax1.plot(epochs, self.train_losses, 'b-', label='训练', linewidth=2)
-        ax1.plot(epochs, self.val_losses, 'r-', label='验证', linewidth=2)
-        ax1.set_xlabel('Epoch')
+            # Mark epoch boundaries
+            for i, boundary in enumerate(self.epoch_boundaries):
+                if boundary <= len(self.batch_numbers):
+                    ax1.axvline(x=boundary, color='red', linestyle='--', alpha=0.6)
+                    ax1.text(boundary, ax1.get_ylim()[1] * 0.95, f'E{i + 1}',
+                             rotation=90, ha='right', va='top', fontsize=8, color='red')
+
+            # Add epoch-level validation loss if available
+            if len(self.val_losses) > 0:
+                epoch_x_positions = self.epoch_boundaries[:len(self.val_losses)]
+                ax1.plot(epoch_x_positions, self.val_losses, 'ro-', linewidth=2,
+                         markersize=4, label='Validation Loss (epoch)', alpha=0.8)
+
+        ax1.set_xlabel('Batch')
         ax1.set_ylabel('Loss')
-        ax1.set_title('损失曲线')
+        ax1.set_title('Loss Curves (Batch-level + Epoch Markers)')
         ax1.legend()
         ax1.grid(True, alpha=0.3)
 
-        # 学习率曲线
-        ax2.plot(epochs, self.learning_rates, 'g-', linewidth=2)
-        ax2.set_xlabel('Epoch')
-        ax2.set_ylabel('Learning Rate')
-        ax2.set_title('学习率变化')
-        ax2.set_yscale('log')
-        ax2.grid(True, alpha=0.3)
+        # Right plot: epoch-level learning rate curve
+        if len(self.learning_rates) > 0:
+            epochs_range = range(1, len(self.learning_rates) + 1)
+            ax2.plot(epochs_range, self.learning_rates, 'g-', linewidth=2, marker='o', markersize=3)
+            ax2.set_xlabel('Epoch')
+            ax2.set_ylabel('Learning Rate')
+            ax2.set_title('Learning Rate Schedule')
+            ax2.set_yscale('log')
+            ax2.grid(True, alpha=0.3)
 
         plt.tight_layout()
-        plt.savefig(self.save_dir / f'curves_epoch_{epoch:03d}.png', dpi=150, bbox_inches='tight')
+
+        # Save with epoch and batch information in filename
+        filename = f'training_curves_epoch_{epoch:03d}_batch_{self.total_batches:05d}.png'
+        plt.savefig(self.plots_dir / filename, dpi=150, bbox_inches='tight')
         plt.close()
 
     def train(self, train_dataset, val_dataset):
-        """主训练循环"""
-        # 标记训练开始
+        """Main training loop"""
+        # Mark training start
         self.training_in_progress = True
 
-        # 数据加载器
+        # Data loaders
         data_kwargs = {
             'batch_size': self.args.batch_size,
             'num_workers': self.device_config['num_workers'],
@@ -457,30 +576,30 @@ class Trainer:
         train_loader = DataLoader(train_dataset, shuffle=False, **data_kwargs)
         val_loader = DataLoader(val_dataset, shuffle=False, **data_kwargs)
 
-        self.logger.info(f"训练集: {len(train_dataset)}, 验证集: {len(val_dataset)}")
-        self.logger.info(f"设备: {self.device}")
-        self.logger.info("⚠️  按Ctrl+C可安全停止训练并自动保存模型")
+        self.logger.info(f"Training set: {len(train_dataset)}, Validation set: {len(val_dataset)}")
+        self.logger.info(f"Device: {self.device}")
+        self.logger.info("⚠️  Press Ctrl+C to safely stop training and auto-save model")
 
-        # 早停计数器
+        # Early stopping counter
         patience_counter = 0
         start_time = time.time()
 
         try:
             for epoch in range(self.start_epoch, self.args.epochs):
-                # 训练和验证
+                # Training and validation
                 train_loss = self.train_epoch(epoch, train_loader)
                 val_loss = self.validate(val_loader)
 
-                # 更新学习率
+                # Update learning rate
                 self.scheduler.step(val_loss)
                 current_lr = self.optimizer.param_groups[0]['lr']
 
-                # 记录指标
+                # Record metrics
                 self.train_losses.append(train_loss)
                 self.val_losses.append(val_loss)
                 self.learning_rates.append(current_lr)
 
-                # 检查最佳模型
+                # Check for best model
                 is_best = val_loss < self.best_loss
                 if is_best:
                     self.best_loss = val_loss
@@ -488,91 +607,93 @@ class Trainer:
                 else:
                     patience_counter += 1
 
-                # 记录进度
+                # Log progress
                 self.logger.info(
-                    f"Epoch {epoch:03d}: 训练={train_loss:.6f}, "
-                    f"验证={val_loss:.6f}, LR={current_lr:.2e}"
+                    f"Epoch {epoch:03d}: Train={train_loss:.6f}, "
+                    f"Val={val_loss:.6f}, LR={current_lr:.2e}"
                     f"{' [BEST]' if is_best else ''}"
                 )
 
-                # 保存检查点和图表
+                # Save checkpoint (will automatically plot curves)
                 if epoch % self.args.save_interval == 0 or is_best:
                     self.save_checkpoint(epoch, is_best)
-                    self.plot_curves(epoch)
 
-                # 早停检查
+                # Early stopping check
                 if patience_counter >= DEFAULT_CONFIG["early_stop_patience"]:
-                    self.logger.info(f"早停触发，Epoch {epoch}")
+                    self.logger.info(f"Early stopping triggered at Epoch {epoch}")
                     break
 
         except KeyboardInterrupt:
-            self.logger.info("\n⚠️  收到键盘中断信号")
-            # 这里的保存由信号处理器处理
+            self.logger.info("\n⚠️  Received keyboard interrupt signal")
+            # Saving is handled by signal handler
 
         except Exception as e:
-            self.logger.error(f"❌ 训练过程中出现异常: {e}")
-            # 保存异常时的检查点
+            self.logger.error(f"❌ Exception occurred during training: {e}")
+            # Save checkpoint on exception, including plots
             try:
-                exception_path = self.save_dir / f'exception_save_epoch_{self.current_epoch:03d}.pth'
+                exception_path = self.checkpoints_dir / f'exception_save_epoch_{self.current_epoch:03d}.pth'
                 self.save_emergency_checkpoint(exception_path)
-                self.logger.info(f"✓ 异常保存完成: {exception_path}")
+                self.logger.info(f"✓ Exception save completed: {exception_path}")
             except Exception as save_error:
-                self.logger.error(f"❌ 异常保存失败: {save_error}")
+                self.logger.error(f"❌ Exception save failed: {save_error}")
             raise
 
         finally:
-            # 标记训练结束
+            # Mark training end
             self.training_in_progress = False
 
-        # 训练完成
+        # Training completed
         total_time = time.time() - start_time
         self.logger.info("=" * 50)
-        self.logger.info(f"训练完成! 用时: {total_time / 3600:.2f}小时")
-        self.logger.info(f"最佳验证损失: {self.best_loss:.6f}")
+        self.logger.info(f"Training completed! Duration: {total_time / 3600:.2f} hours")
+        self.logger.info(f"Best validation loss: {self.best_loss:.6f}")
         self.logger.info("=" * 50)
 
 
 def main():
-    # 注册信号处理器
+    # Register signal handlers
     signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
-    signal.signal(signal.SIGTERM, signal_handler)  # 终止信号
+    signal.signal(signal.SIGTERM, signal_handler)  # Termination signal
 
-    # 注册退出清理函数
+    # Register exit cleanup function
     atexit.register(cleanup_on_exit)
 
-    parser = argparse.ArgumentParser(description='TrackNetV2 羽毛球追踪训练')
+    parser = argparse.ArgumentParser(description='TrackNetV2 Badminton Tracking Training')
 
-    # 数据参数
-    parser.add_argument('--data_dir', type=str, required=True, help='数据集目录')
-    parser.add_argument('--save_dir', type=str, default='checkpoints', help='保存目录')
+    # Data parameters
+    parser.add_argument('--data_dir', type=str, required=True, help='Dataset directory')
+    parser.add_argument('--save_dir', type=str, default='checkpoints', help='Save directory')
 
-    # 训练参数
-    parser.add_argument('--batch_size', type=int, default=2, help='批次大小')
-    parser.add_argument('--epochs', type=int, default=30, help='训练轮数')
-    parser.add_argument('--lr', type=float, default=1.0, help='学习率')
-    parser.add_argument('--weight_decay', type=float, default=0.0, help='权重衰减')
-    parser.add_argument('--grad_clip', type=float, default=1.0, help='梯度裁剪')
-    parser.add_argument('--save_interval', type=int, default=1, help='保存间隔')
+    # Training parameters
+    parser.add_argument('--batch_size', type=int, default=2, help='Batch size')
+    parser.add_argument('--epochs', type=int, default=30, help='Number of epochs')
+    parser.add_argument('--lr', type=float, default=1.0, help='Learning rate')
+    parser.add_argument('--weight_decay', type=float, default=0.0, help='Weight decay')
+    parser.add_argument('--grad_clip', type=float, default=1.0, help='Gradient clipping')
+    parser.add_argument('--save_interval', type=int, default=1, help='Save interval')
 
-    # 续训参数
-    parser.add_argument('--resume', type=str, help='继续训练的检查点路径')
+    # Resume training parameter
+    parser.add_argument('--resume', type=str, help='Checkpoint path to resume training')
 
     args = parser.parse_args()
 
-    # 获取设备
+    # Setup directory structure first
+    save_dir, checkpoints_dir, plots_dir, logs_dir = setup_directories(args.save_dir)
+
+    # Get device configuration
     device, device_config = get_device_and_config()
 
-    # 根据设备调整批次大小
+    # Adjust batch size based on device
     if 'batch_multiplier' in device_config:
         args.batch_size = max(1, int(args.batch_size * device_config['batch_multiplier']))
-        print(f"批次大小调整为: {args.batch_size}")
+        print(f"Batch size adjusted to: {args.batch_size}")
 
     try:
-        # 加载数据集
-        print(f"\n加载数据集: {args.data_dir}")
+        # Load dataset
+        print(f"\nLoading dataset: {args.data_dir}")
         full_dataset = load_dataset(args.data_dir)
 
-        # 分割数据集
+        # Split dataset
         total_size = len(full_dataset)
         train_size = int(DEFAULT_CONFIG['train_split'] * total_size)
         indices = torch.randperm(total_size).tolist()
@@ -580,18 +701,18 @@ def main():
         train_dataset = Subset(full_dataset, indices[:train_size])
         val_dataset = Subset(full_dataset, indices[train_size:])
 
-        print(f"训练集: {len(train_dataset)}, 验证集: {len(val_dataset)}")
+        print(f"Training set: {len(train_dataset)}, Validation set: {len(val_dataset)}")
 
-        # 设置全局trainer实例（用于信号处理）
+        # Setup global trainer instance (for signal handling)
         global _trainer_instance
-        trainer = Trainer(args, device, device_config)
+        trainer = Trainer(args, device, device_config, save_dir, checkpoints_dir, plots_dir, logs_dir)
         _trainer_instance = trainer
 
-        # 开始训练
+        # Start training
         trainer.train(train_dataset, val_dataset)
 
     except Exception as e:
-        print(f"❌ 训练失败: {e}")
+        print(f"❌ Training failed: {e}")
         import traceback
         traceback.print_exc()
 
@@ -600,13 +721,8 @@ if __name__ == "__main__":
     main()
 
     """
-    新模型训练：python train.py --data_dir Dataset/Professional --save_dir checkpoints
-    继续训练：python train.py --data_dir Dataset/Professional --resume checkpoints/latest.pth
-    全参数训练：python train.py --data_dir Dataset/Professional --save_dir checkpoints --batch_size 2 --epochs 30 --lr 1.0 --weight_decay 0.0 --grad_clip 1.0 --save_interval 1
-    
-    强制结束时会自动保存模型到以下位置：
-    - emergency_save_epoch_XXX.pth (Ctrl+C或SIGTERM信号)
-    - exception_save_epoch_XXX.pth (程序异常)
-    - exit_save_epoch_XXX.pth (正常退出)
-    - latest.pth (总是更新为最新状态)
+    Usage Examples:
+    New training: python train.py --data_dir Dataset/Professional --save_dir checkpoints
+    Resume training: python train.py --data_dir Dataset/Professional --resume checkpoints/checkpoints/latest.pth
+    Full parameters: python train.py --data_dir Dataset/Professional --save_dir checkpoints --batch_size 2 --epochs 30 --lr 1.0 --weight_decay 0.0 --grad_clip 1.0 --save_interval 1
     """
