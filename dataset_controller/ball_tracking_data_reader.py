@@ -480,18 +480,4 @@ if __name__ == "__main__":
     dataset1 = BallTrackingDataset(str(match_dir), config=config_3in3out)
     frames, labels = dataset1[0]
     print(f"3in3out - Frames shape: {frames.shape}, Labels count: {len(labels)}")
-
-    # Example 2: 3 input frames -> 1 output frame (center frame only)
-    config_3in1out = {
-        "input_frames": 3,
-        "output_frames": 1,
-        "normalize_coords": True,
-        "normalize_pixels": True,
-        "video_ext": ".mp4",
-        "csv_suffix": "_ball.csv"
-    }
-
-    dataset2 = BallTrackingDataset(str(match_dir), config=config_3in1out)
-    frames, labels = dataset2[0]
-    print(f"3in1out - Frames shape: {frames.shape}, Labels count: {len(labels)}")
-    print(dataset2[0])
+    print(dataset1[0])
