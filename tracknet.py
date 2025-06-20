@@ -114,13 +114,12 @@ class WeightedBCELoss(nn.Module):
         eps = 1e-7
         y_pred = torch.clamp(y_pred, eps, 1 - eps)
 
-        w = y_pred.detach()        # w = 预测值，避免二阶梯度爆炸可 detach
+        w = y_pred.detach()  # w = 预测值，避免二阶梯度爆炸可 detach
         loss = -(
-                (1 - w)**2 * y_true * torch.log(y_pred) +
-                w**2       * (1 - y_true) * torch.log(1 - y_pred)
+                (1 - w) ** 2 * y_true * torch.log(y_pred) +
+                w ** 2 * (1 - y_true) * torch.log(1 - y_pred)
         ).mean()
         return loss
-
 
 
 def postprocess_heatmap(heatmap, threshold=0.5):
