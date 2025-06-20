@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 
 class TrackNet(nn.Module):
-    """TrackNetV2: Efficient Shuttlecock Tracking Network
+    """TrackNet: Efficient Shuttlecock Tracking Network
     Input: 512×288×9 -> Output: 512×288×3
     """
 
@@ -167,3 +167,5 @@ if __name__ == "__main__":
 
     coords = postprocess_heatmap(output)
     print(f"Coordinates: {coords[0]}")
+
+    print(output)
