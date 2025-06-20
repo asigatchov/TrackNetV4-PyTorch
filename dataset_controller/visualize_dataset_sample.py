@@ -334,9 +334,10 @@ if __name__ == "__main__":
         "csv_suffix": "_ball.csv"
     }
 
-    dataset1 = BallTrackingDataset(str(match_dir), config=config_3in1out)
-    dataset2 = BallTrackingDataset(str(match_dir), config=config_3in1out)
+    dataset1 = BallTrackingDataset(str(match_dir), config=config_3in3out)
+    dataset2 = BallTrackingDataset(str(match_dir), config=config_3in3out)
 
     dataset = dataset1 + dataset2  # 合并两个数据集
 
-    play_dataset(dataset, delay_ms=10)
+    print(dataset[0])
+    #play_dataset(dataset, delay_ms=10)
