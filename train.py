@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """
-TrackNetV2 羽毛球追踪网络训练脚本
+TrackNetV2 羽毛球追踪网络训练脚本 - 支持强制结束时自动保存
 - 支持CUDA/MPS/CPU自动选择
 - 支持从头训练和断点续训
 - MIMO设计，每epoch自动保存
+- 强制结束时自动保存当前模型
 """
 
 import argparse
 import json
 import logging
 import time
+import signal
+import sys
+import atexit
 from pathlib import Path
 from typing import Dict, Tuple, Optional
 
@@ -23,6 +27,9 @@ from tqdm import tqdm
 
 from dataset_controller.ball_tracking_data_reader import BallTrackingDataset
 from tracknet import TrackNetV4, WeightedBCELoss
+
+# 全局变量，用于信号处理
+_trainer_instance = None
 
 # 默认配置
 DEFAULT_CONFIG = {
@@ -51,6 +58,45 @@ DATASET_CONFIG = {
     "video_ext": ".mp4",
     "csv_suffix": "_ball.csv"
 }
+
+
+def signal_handler(signum, frame):
+    """信号处理函数 - 处理Ctrl+C等强制结束信号"""
+    global _trainer_instance
+
+    signal_names = {
+        signal.SIGINT: "SIGINT (Ctrl+C)",
+        signal.SIGTERM: "SIGTERM"
+    }
+
+    signal_name = signal_names.get(signum, f"Signal {signum}")
+    print(f"\n⚠️  收到{signal_name}信号，正在安全保存模型...")
+
+    if _trainer_instance is not None:
+        try:
+            # 保存紧急检查点
+            emergency_path = _trainer_instance.save_dir / f'emergency_save_epoch_{_trainer_instance.current_epoch:03d}.pth'
+            _trainer_instance.save_emergency_checkpoint(emergency_path)
+            print(f"✓ 紧急保存完成: {emergency_path}")
+        except Exception as e:
+            print(f"❌ 紧急保存失败: {e}")
+
+    print("🔄 进程安全退出")
+    sys.exit(0)
+
+
+def cleanup_on_exit():
+    """程序退出时的清理函数"""
+    global _trainer_instance
+    if _trainer_instance is not None and hasattr(_trainer_instance, 'training_in_progress'):
+        if _trainer_instance.training_in_progress:
+            print("\n🔄 程序正常退出，执行最后保存...")
+            try:
+                exit_path = _trainer_instance.save_dir / f'exit_save_epoch_{_trainer_instance.current_epoch:03d}.pth'
+                _trainer_instance.save_emergency_checkpoint(exit_path)
+                print(f"✓ 退出保存完成: {exit_path}")
+            except Exception as e:
+                print(f"❌ 退出保存失败: {e}")
 
 
 def get_device_and_config():
@@ -188,6 +234,11 @@ class Trainer:
         self.save_dir = Path(args.save_dir)
         self.save_dir.mkdir(exist_ok=True)
 
+        # 训练状态追踪
+        self.current_epoch = 0
+        self.current_batch = 0
+        self.training_in_progress = False
+
         # 设置日志
         logging.basicConfig(
             level=logging.INFO,
@@ -240,10 +291,11 @@ class Trainer:
         total_params = sum(p.numel() for p in self.model.parameters())
         self.logger.info(f"模型参数: {total_params:,}")
 
-    def save_checkpoint(self, epoch, is_best=False):
+    def save_checkpoint(self, epoch, is_best=False, checkpoint_type="regular"):
         """保存检查点"""
         checkpoint = {
             'epoch': epoch,
+            'current_batch': self.current_batch,
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict(),
@@ -251,7 +303,9 @@ class Trainer:
             'train_losses': self.train_losses,
             'val_losses': self.val_losses,
             'learning_rates': self.learning_rates,
-            'config': vars(self.args)
+            'config': vars(self.args),
+            'checkpoint_type': checkpoint_type,
+            'save_time': time.time()
         }
 
         # 保存最新
@@ -262,6 +316,27 @@ class Trainer:
         if is_best:
             torch.save(checkpoint, self.save_dir / 'best.pth')
             self.logger.info(f"✓ 最佳模型 Epoch {epoch}: {self.best_loss:.6f}")
+
+    def save_emergency_checkpoint(self, save_path):
+        """保存紧急检查点"""
+        checkpoint = {
+            'epoch': self.current_epoch,
+            'current_batch': self.current_batch,
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'scheduler_state_dict': self.scheduler.state_dict(),
+            'best_loss': self.best_loss,
+            'train_losses': self.train_losses,
+            'val_losses': self.val_losses,
+            'learning_rates': self.learning_rates,
+            'config': vars(self.args),
+            'checkpoint_type': "emergency",
+            'save_time': time.time()
+        }
+
+        torch.save(checkpoint, save_path)
+        # 同时保存为最新检查点
+        torch.save(checkpoint, self.save_dir / 'latest.pth')
 
     def load_checkpoint(self, checkpoint_path):
         """加载检查点"""
@@ -282,15 +357,23 @@ class Trainer:
         self.val_losses = checkpoint['val_losses']
         self.learning_rates = checkpoint['learning_rates']
 
-        self.logger.info(f"✓ 从Epoch {self.start_epoch}继续训练")
+        # 如果是紧急保存的检查点，显示特殊信息
+        checkpoint_type = checkpoint.get('checkpoint_type', 'regular')
+        if checkpoint_type == 'emergency':
+            self.logger.info(f"✓ 从紧急保存的检查点恢复: Epoch {self.start_epoch}")
+        else:
+            self.logger.info(f"✓ 从Epoch {self.start_epoch}继续训练")
 
     def train_epoch(self, epoch, train_loader):
         """训练一个epoch"""
         self.model.train()
         total_loss = 0.0
+        self.current_epoch = epoch
 
         pbar = tqdm(train_loader, desc=f"Epoch {epoch:03d}")
-        for inputs, targets in pbar:
+        for batch_idx, (inputs, targets) in enumerate(pbar):
+            self.current_batch = batch_idx
+
             inputs = inputs.to(self.device, non_blocking=True)
             targets = targets.to(self.device, non_blocking=True)
 
@@ -358,6 +441,9 @@ class Trainer:
 
     def train(self, train_dataset, val_dataset):
         """主训练循环"""
+        # 标记训练开始
+        self.training_in_progress = True
+
         # 数据加载器
         data_kwargs = {
             'batch_size': self.args.batch_size,
@@ -373,49 +459,70 @@ class Trainer:
 
         self.logger.info(f"训练集: {len(train_dataset)}, 验证集: {len(val_dataset)}")
         self.logger.info(f"设备: {self.device}")
+        self.logger.info("⚠️  按Ctrl+C可安全停止训练并自动保存模型")
 
         # 早停计数器
         patience_counter = 0
         start_time = time.time()
 
-        for epoch in range(self.start_epoch, self.args.epochs):
-            # 训练和验证
-            train_loss = self.train_epoch(epoch, train_loader)
-            val_loss = self.validate(val_loader)
+        try:
+            for epoch in range(self.start_epoch, self.args.epochs):
+                # 训练和验证
+                train_loss = self.train_epoch(epoch, train_loader)
+                val_loss = self.validate(val_loader)
 
-            # 更新学习率
-            self.scheduler.step(val_loss)
-            current_lr = self.optimizer.param_groups[0]['lr']
+                # 更新学习率
+                self.scheduler.step(val_loss)
+                current_lr = self.optimizer.param_groups[0]['lr']
 
-            # 记录指标
-            self.train_losses.append(train_loss)
-            self.val_losses.append(val_loss)
-            self.learning_rates.append(current_lr)
+                # 记录指标
+                self.train_losses.append(train_loss)
+                self.val_losses.append(val_loss)
+                self.learning_rates.append(current_lr)
 
-            # 检查最佳模型
-            is_best = val_loss < self.best_loss
-            if is_best:
-                self.best_loss = val_loss
-                patience_counter = 0
-            else:
-                patience_counter += 1
+                # 检查最佳模型
+                is_best = val_loss < self.best_loss
+                if is_best:
+                    self.best_loss = val_loss
+                    patience_counter = 0
+                else:
+                    patience_counter += 1
 
-            # 记录进度
-            self.logger.info(
-                f"Epoch {epoch:03d}: 训练={train_loss:.6f}, "
-                f"验证={val_loss:.6f}, LR={current_lr:.2e}"
-                f"{' [BEST]' if is_best else ''}"
-            )
+                # 记录进度
+                self.logger.info(
+                    f"Epoch {epoch:03d}: 训练={train_loss:.6f}, "
+                    f"验证={val_loss:.6f}, LR={current_lr:.2e}"
+                    f"{' [BEST]' if is_best else ''}"
+                )
 
-            # 保存检查点和图表
-            if epoch % self.args.save_interval == 0 or is_best:
-                self.save_checkpoint(epoch, is_best)
-                self.plot_curves(epoch)
+                # 保存检查点和图表
+                if epoch % self.args.save_interval == 0 or is_best:
+                    self.save_checkpoint(epoch, is_best)
+                    self.plot_curves(epoch)
 
-            # 早停检查
-            if patience_counter >= DEFAULT_CONFIG["early_stop_patience"]:
-                self.logger.info(f"早停触发，Epoch {epoch}")
-                break
+                # 早停检查
+                if patience_counter >= DEFAULT_CONFIG["early_stop_patience"]:
+                    self.logger.info(f"早停触发，Epoch {epoch}")
+                    break
+
+        except KeyboardInterrupt:
+            self.logger.info("\n⚠️  收到键盘中断信号")
+            # 这里的保存由信号处理器处理
+
+        except Exception as e:
+            self.logger.error(f"❌ 训练过程中出现异常: {e}")
+            # 保存异常时的检查点
+            try:
+                exception_path = self.save_dir / f'exception_save_epoch_{self.current_epoch:03d}.pth'
+                self.save_emergency_checkpoint(exception_path)
+                self.logger.info(f"✓ 异常保存完成: {exception_path}")
+            except Exception as save_error:
+                self.logger.error(f"❌ 异常保存失败: {save_error}")
+            raise
+
+        finally:
+            # 标记训练结束
+            self.training_in_progress = False
 
         # 训练完成
         total_time = time.time() - start_time
@@ -426,6 +533,13 @@ class Trainer:
 
 
 def main():
+    # 注册信号处理器
+    signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
+    signal.signal(signal.SIGTERM, signal_handler)  # 终止信号
+
+    # 注册退出清理函数
+    atexit.register(cleanup_on_exit)
+
     parser = argparse.ArgumentParser(description='TrackNetV2 羽毛球追踪训练')
 
     # 数据参数
@@ -468,8 +582,12 @@ def main():
 
         print(f"训练集: {len(train_dataset)}, 验证集: {len(val_dataset)}")
 
-        # 开始训练
+        # 设置全局trainer实例（用于信号处理）
+        global _trainer_instance
         trainer = Trainer(args, device, device_config)
+        _trainer_instance = trainer
+
+        # 开始训练
         trainer.train(train_dataset, val_dataset)
 
     except Exception as e:
@@ -485,4 +603,10 @@ if __name__ == "__main__":
     新模型训练：python train.py --data_dir Dataset/Professional --save_dir checkpoints
     继续训练：python train.py --data_dir Dataset/Professional --resume checkpoints/latest.pth
     全参数训练：python train.py --data_dir Dataset/Professional --save_dir checkpoints --batch_size 2 --epochs 30 --lr 1.0 --weight_decay 0.0 --grad_clip 1.0 --save_interval 1
+    
+    强制结束时会自动保存模型到以下位置：
+    - emergency_save_epoch_XXX.pth (Ctrl+C或SIGTERM信号)
+    - exception_save_epoch_XXX.pth (程序异常)
+    - exit_save_epoch_XXX.pth (正常退出)
+    - latest.pth (总是更新为最新状态)
     """
