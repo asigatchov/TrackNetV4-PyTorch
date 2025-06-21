@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-TrackNet Badminton Tracking Network Training Script
+TrackNet Badminton Tracking Network Training Script - FIXED VERSION
+- Proper coordinate mapping with equal ratio scaling
+- No normalization in dataset loading (keep raw pixels 0-255 and pixel coordinates)
+- Precise transformation: raw -> equal ratio scale -> normalize
+- Equal ratio image scaling (not cropping)
 - CUDA/MPS/CPU automatic device selection
-- Training from scratch and resume from checkpoint
-- MIMO design with automatic saving per epoch
-- Emergency save on forced termination with signal handling
-- Comprehensive plotting strategy with batch-level tracking
-- Complete directory structure setup
+- MIMO design with comprehensive state management
 """
 
 import argparse
@@ -16,7 +16,7 @@ import sys
 import time
 import atexit
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 import matplotlib.pyplot as plt
 import torch
@@ -53,8 +53,8 @@ CONFIG = {
 DATASET_CONFIG = {
     "input_frames": 3,
     "output_frames": 3,  # MIMO design
-    "normalize_coords": True,
-    "normalize_pixels": True,
+    "normalize_coords": False,  # ⭐ 关键：保持原始像素坐标
+    "normalize_pixels": False,  # ⭐ 关键：保持原始像素值0-255
 }
 
 
@@ -144,55 +144,153 @@ def init_weights(m):
             nn.init.uniform_(m.bias)
 
 
-def create_gaussian_heatmap(x, y, visibility, height, width, radius=3.0):
-    """Generate Gaussian heatmap for ball position"""
+def calculate_equal_ratio_resize(original_height: int, original_width: int,
+                                 target_height: int, target_width: int) -> Tuple[int, int]:
+    """Calculate new size for equal ratio scaling (no distortion)"""
+    # Calculate scaling ratios
+    ratio_h = target_height / original_height
+    ratio_w = target_width / original_width
+
+    # Use minimum ratio to ensure both dimensions fit
+    scale_ratio = min(ratio_h, ratio_w)
+
+    new_height = int(original_height * scale_ratio)
+    new_width = int(original_width * scale_ratio)
+
+    return new_height, new_width, scale_ratio
+
+
+def create_gaussian_heatmap(x_norm: float, y_norm: float, visibility: float,
+                            height: int, width: int, radius: float = 3.0) -> torch.Tensor:
+    """
+    Generate Gaussian heatmap for ball position
+
+    Args:
+        x_norm: Normalized x coordinate (0-1)
+        y_norm: Normalized y coordinate (0-1)
+        visibility: Visibility flag (0 or 1)
+        height: Heatmap height
+        width: Heatmap width
+        radius: Gaussian radius in pixels
+
+    Returns:
+        Gaussian heatmap tensor
+    """
     heatmap = torch.zeros(height, width)
     if visibility < 0.5:
         return heatmap
 
-    x_pixel = max(0, min(width - 1, int(x * width)))
-    y_pixel = max(0, min(height - 1, int(y * height)))
+    # Convert normalized coordinates to pixel coordinates
+    x_pixel = max(0, min(width - 1, int(x_norm * width)))
+    y_pixel = max(0, min(height - 1, int(y_norm * height)))
 
+    # Define gaussian kernel size
     kernel_size = int(3 * radius)
-    x_min, x_max = max(0, x_pixel - kernel_size), min(width, x_pixel + kernel_size + 1)
-    y_min, y_max = max(0, y_pixel - kernel_size), min(height, y_pixel + kernel_size + 1)
+    x_min = max(0, x_pixel - kernel_size)
+    x_max = min(width, x_pixel + kernel_size + 1)
+    y_min = max(0, y_pixel - kernel_size)
+    y_max = min(height, y_pixel + kernel_size + 1)
 
+    # Create coordinate grids
     y_coords, x_coords = torch.meshgrid(
-        torch.arange(y_min, y_max), torch.arange(x_min, x_max), indexing='ij'
+        torch.arange(y_min, y_max),
+        torch.arange(x_min, x_max),
+        indexing='ij'
     )
 
+    # Calculate gaussian values
     dist_sq = (x_coords - x_pixel) ** 2 + (y_coords - y_pixel) ** 2
     gaussian = torch.exp(-dist_sq / (2 * radius ** 2))
+
+    # Remove very small values
     gaussian[gaussian < 0.01] = 0
 
+    # Assign to heatmap
     heatmap[y_min:y_max, x_min:x_max] = gaussian
+
     return heatmap
 
 
 def collate_fn(batch):
-    """Custom collate function with heatmap generation"""
+    """
+    Custom collate function with proper coordinate mapping
+
+    Process:
+    1. Keep original image and coordinates
+    2. Calculate equal ratio scaling
+    3. Resize image with equal ratio
+    4. Scale coordinates accordingly
+    5. Normalize image pixels to [0, 1]
+    6. Normalize coordinates to [0, 1]
+    7. Generate Gaussian heatmaps
+    """
     frames_list, heatmaps_list = [], []
 
     for frames, labels in batch:
-        # Resize to paper standard: 512×288
-        frames = F.interpolate(
-            frames.unsqueeze(0),
-            size=(CONFIG["input_height"], CONFIG["input_width"]),
-            mode='bilinear', align_corners=False
-        ).squeeze(0)
-        frames_list.append(frames)
+        # Get original dimensions
+        original_height, original_width = frames.shape[-2], frames.shape[-1]
 
-        # Generate MIMO heatmaps
+        # Calculate equal ratio resize parameters
+        new_height, new_width, scale_ratio = calculate_equal_ratio_resize(
+            original_height, original_width,
+            CONFIG["input_height"], CONFIG["input_width"]
+        )
+
+        # Step 1: Equal ratio resize image
+        frames_resized = F.interpolate(
+            frames.unsqueeze(0),
+            size=(new_height, new_width),
+            mode='bilinear',
+            align_corners=False
+        ).squeeze(0)
+
+        # Step 2: Pad to target size if needed (center padding)
+        if new_height != CONFIG["input_height"] or new_width != CONFIG["input_width"]:
+            pad_h = CONFIG["input_height"] - new_height
+            pad_w = CONFIG["input_width"] - new_width
+
+            pad_top = pad_h // 2
+            pad_bottom = pad_h - pad_top
+            pad_left = pad_w // 2
+            pad_right = pad_w - pad_left
+
+            frames_resized = F.pad(frames_resized,
+                                   (pad_left, pad_right, pad_top, pad_bottom),
+                                   mode='constant', value=0)
+        else:
+            pad_left = pad_top = 0
+
+        # Step 3: Normalize image pixels to [0, 1]
+        frames_normalized = frames_resized.float() / 255.0
+        frames_list.append(frames_normalized)
+
+        # Step 4: Process coordinates and generate heatmaps
         heatmaps = torch.zeros(len(labels), CONFIG["input_height"], CONFIG["input_width"])
+
         for i, label_dict in enumerate(labels):
             if isinstance(label_dict, dict):
-                heatmap = create_gaussian_heatmap(
-                    label_dict['x'].item(), label_dict['y'].item(),
-                    label_dict['visibility'].item(),
-                    CONFIG["input_height"], CONFIG["input_width"],
-                    CONFIG["heatmap_radius"]
-                )
-                heatmaps[i] = heatmap
+                # Get original pixel coordinates
+                x_orig = label_dict['x'].item()  # Original pixel x
+                y_orig = label_dict['y'].item()  # Original pixel y
+                visibility = label_dict['visibility'].item()
+
+                if visibility >= 0.5:
+                    # Step 4a: Scale coordinates
+                    x_scaled = x_orig * scale_ratio + pad_left
+                    y_scaled = y_orig * scale_ratio + pad_top
+
+                    # Step 4b: Normalize coordinates to [0, 1]
+                    x_norm = x_scaled / CONFIG["input_width"]
+                    y_norm = y_scaled / CONFIG["input_height"]
+
+                    # Step 4c: Generate Gaussian heatmap
+                    heatmap = create_gaussian_heatmap(
+                        x_norm, y_norm, visibility,
+                        CONFIG["input_height"], CONFIG["input_width"],
+                        CONFIG["heatmap_radius"]
+                    )
+                    heatmaps[i] = heatmap
+
         heatmaps_list.append(heatmaps)
 
     return torch.stack(frames_list), torch.stack(heatmaps_list)
@@ -595,7 +693,7 @@ def main():
     signal.signal(signal.SIGTERM, signal_handler)
     atexit.register(cleanup_on_exit)
 
-    parser = argparse.ArgumentParser(description='TrackNet Badminton Tracking Training')
+    parser = argparse.ArgumentParser(description='TrackNet Badminton Tracking Training - Fixed Version')
 
     # Data parameters
     parser.add_argument('--data_dir', type=str, required=True, help='Dataset directory')
@@ -626,6 +724,7 @@ def main():
     try:
         # Load and split dataset
         print(f"\nLoading dataset: {args.data_dir}")
+        print("⭐ Using RAW data: No coordinate/pixel normalization in dataset")
         full_dataset = load_dataset(args.data_dir)
 
         total_size = len(full_dataset)
@@ -654,8 +753,12 @@ if __name__ == "__main__":
     main()
 
 """
-Usage Examples:
-New training: python train.py --data_dir Dataset/Professional --save_dir checkpoints
-Resume training: python train.py --data_dir Dataset/Professional --resume checkpoints/checkpoints/latest.pth
-Custom parameters: python train.py --data_dir Dataset/Professional --batch_size 4 --epochs 50 --lr 1.0
+New training with proper coordinate mapping:
+python train_fixed.py --data_dir Dataset/Professional --save_dir checkpoints
+
+Resume training:
+python train_fixed.py --data_dir Dataset/Professional --resume checkpoints/checkpoints/latest.pth
+
+Custom parameters:
+python train_fixed.py --data_dir Dataset/Professional --batch_size 4 --epochs 50 --lr 1.0
 """

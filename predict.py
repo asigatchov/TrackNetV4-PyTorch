@@ -1,335 +1,221 @@
 #!/usr/bin/env python3
 """
-TrackNetV4 Ball Tracking Prediction Script
-Input: 3 consecutive frames
-Output: Ball coordinates for 3 frames
+TrackNet Ball Tracking Prediction Script
 """
 
 from pathlib import Path
+from typing import Tuple, List, Dict, Any
 
 import cv2
 import torch
 import torch.nn.functional as F
 
-from tracknet import TrackNetV4
+from tracknet import TrackNet
 
 
-def load_model(checkpoint_path, device):
-    """Load trained model from checkpoint"""
-    model = TrackNetV4()
-
-    # Load checkpoint
+def load_model(checkpoint_path: str, device: torch.device) -> TrackNet:
+    """Load trained model"""
+    model = TrackNet(input_frames=3, output_frames=3)
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
-
     model = model.to(device)
     model.eval()
 
-    print(f"✓ Model loaded from: {checkpoint_path}")
-    print(f"✓ Training epoch: {checkpoint['epoch']}")
-    print(f"✓ Best validation loss: {checkpoint['best_loss']:.6f}")
+    print(f"Model loaded: {checkpoint_path}")
+    print(f"Epoch: {checkpoint['epoch']}, Loss: {checkpoint['best_loss']:.6f}")
 
     return model
 
 
-def preprocess_frames(frame_paths, input_height=288, input_width=512):
-    """
-    Load and preprocess 3 consecutive frames
-    Args:
-        frame_paths: List of 3 image file paths
-        input_height: Target height for model input (288)
-        input_width: Target width for model input (512)
-    Returns:
-        preprocessed_tensor: [1, 9, H, W] tensor ready for model
-        original_sizes: List of (height, width) for each frame
-    """
+def calculate_resize_params(orig_h: int, orig_w: int, target_h: int, target_w: int) -> Tuple[int, int, float]:
+    """Calculate equal ratio resize parameters"""
+    ratio = min(target_h / orig_h, target_w / orig_w)
+    new_h = int(orig_h * ratio)
+    new_w = int(orig_w * ratio)
+    return new_h, new_w, ratio
+
+
+def preprocess_frames(frame_paths: List[str], h: int = 288, w: int = 512) -> Tuple[torch.Tensor, List[Dict]]:
+    """Preprocess frames with same pipeline as training"""
     frames = []
-    original_sizes = []
+    transform_info = []
 
-    print("Loading and preprocessing frames...")
-    for i, frame_path in enumerate(frame_paths):
+    for i, path in enumerate(frame_paths):
         # Load image
-        frame = cv2.imread(str(frame_path))
-        if frame is None:
-            raise ValueError(f"Cannot load image: {frame_path}")
+        img = cv2.imread(str(path))
+        if img is None:
+            raise ValueError(f"Cannot load: {path}")
 
-        print(f"  Frame {i + 1}: {frame_path} -> {frame.shape}")
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        orig_h, orig_w = img.shape[:2]
 
-        # Convert BGR to RGB
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        original_sizes.append(frame.shape[:2])  # (height, width)
+        # Equal ratio resize
+        new_h, new_w, ratio = calculate_resize_params(orig_h, orig_w, h, w)
 
-        # Convert to tensor and normalize to [0, 1]
-        frame_tensor = torch.from_numpy(frame).float() / 255.0
-        frame_tensor = frame_tensor.permute(2, 0, 1)  # [H, W, C] -> [C, H, W]
+        # Convert to tensor and resize
+        tensor = torch.from_numpy(img).float().permute(2, 0, 1)
+        tensor = F.interpolate(tensor.unsqueeze(0), size=(new_h, new_w),
+                               mode='bilinear', align_corners=False).squeeze(0)
 
-        frames.append(frame_tensor)
+        # Padding
+        pad_h, pad_w = h - new_h, w - new_w
+        pad_top, pad_left = pad_h // 2, pad_w // 2
 
-    # Stack frames: [3, 3, H, W]
-    frames_tensor = torch.stack(frames, dim=0)
+        if pad_h != 0 or pad_w != 0:
+            tensor = F.pad(tensor, (pad_left, pad_w - pad_left, pad_top, pad_h - pad_top))
 
-    # Resize to model input size
-    frames_tensor = F.interpolate(
-        frames_tensor,
-        size=(input_height, input_width),
-        mode='bilinear',
-        align_corners=False
-    )
+        # Normalize to [0,1]
+        tensor = tensor / 255.0
+        frames.append(tensor)
 
-    # Reshape to [9, H, W] for model input (3 frames × 3 RGB channels)
-    input_tensor = frames_tensor.view(-1, input_height, input_width)
+        # Store transform info
+        transform_info.append({
+            'ratio': ratio, 'pad_left': pad_left, 'pad_top': pad_top,
+            'orig_h': orig_h, 'orig_w': orig_w
+        })
 
-    # Add batch dimension: [1, 9, H, W]
-    input_tensor = input_tensor.unsqueeze(0)
+        print(f"Frame {i + 1}: {orig_w}x{orig_h} -> {new_w}x{new_h} -> {w}x{h}")
 
-    print(f"✓ Preprocessed tensor shape: {input_tensor.shape}")
-
-    return input_tensor, original_sizes
+    # Stack and reshape: [3,3,H,W] -> [1,9,H,W]
+    input_tensor = torch.stack(frames).view(-1, h, w).unsqueeze(0)
+    return input_tensor, transform_info
 
 
-def postprocess_predictions(heatmaps, original_sizes, threshold=0.5):
-    """
-    Convert heatmaps to ball coordinates in original image coordinates
-    Args:
-        heatmaps: [1, 3, H, W] model output heatmaps
-        original_sizes: List of (height, width) for each frame
-        threshold: Detection threshold
-    Returns:
-        coordinates: List of (x, y) coordinates for each frame, None if not detected
-    """
-    batch_size, channels, height, width = heatmaps.shape
+def postprocess_heatmaps(heatmaps: torch.Tensor, transform_info: List[Dict],
+                         threshold: float = 0.5) -> List[Dict]:
+    """Convert heatmaps to coordinates"""
     coordinates = []
 
-    print(f"Postprocessing heatmaps: {heatmaps.shape}")
+    for c in range(heatmaps.shape[1]):
+        heatmap = heatmaps[0, c]
+        transform = transform_info[c]
 
-    for c in range(channels):
-        heatmap = heatmaps[0, c]  # [H, W]
+        # Find peaks
+        binary = (heatmap > threshold).float()
 
-        # Find peaks above threshold
-        binary_map = (heatmap > threshold).float()
+        if binary.sum() > 0:
+            y_idx, x_idx = torch.where(binary > 0)
+            center_x = x_idx.float().mean().item()
+            center_y = y_idx.float().mean().item()
 
-        if binary_map.sum() > 0:
-            # Find center of mass
-            y_indices, x_indices = torch.where(binary_map > 0)
-            center_x = x_indices.float().mean().item()
-            center_y = y_indices.float().mean().item()
+            # Reverse transform to original coordinates
+            orig_x = (center_x - transform['pad_left']) / transform['ratio']
+            orig_y = (center_y - transform['pad_top']) / transform['ratio']
 
-            # Convert to original image coordinates
-            orig_height, orig_width = original_sizes[c % len(original_sizes)]
-            # Scale from model coordinates (288x512) to original coordinates
-            orig_x = center_x * orig_width / width
-            orig_y = center_y * orig_height / height
+            # Clamp to valid range
+            orig_x = max(0, min(transform['orig_w'] - 1, orig_x))
+            orig_y = max(0, min(transform['orig_h'] - 1, orig_y))
 
-            # Get confidence score (max value in heatmap)
             confidence = heatmap.max().item()
 
             coordinates.append({
-                'x': orig_x,
-                'y': orig_y,
-                'confidence': confidence,
-                'detected': True
+                'x': orig_x, 'y': orig_y, 'confidence': confidence, 'detected': True
             })
 
-            print(f"  Frame {c + 1}: Ball detected at ({orig_x:.1f}, {orig_y:.1f}), confidence: {confidence:.3f}")
+            print(f"Frame {c + 1}: Ball at ({orig_x:.1f}, {orig_y:.1f}), conf: {confidence:.3f}")
         else:
             coordinates.append({
-                'x': None,
-                'y': None,
-                'confidence': 0.0,
-                'detected': False
+                'x': None, 'y': None, 'confidence': 0.0, 'detected': False
             })
-            print(f"  Frame {c + 1}: Ball not detected")
+            print(f"Frame {c + 1}: Not detected")
 
     return coordinates
 
 
-def predict_ball_trajectory(model, frame_paths, device):
-    """
-    Predict ball trajectory for 3 consecutive frames
-    Args:
-        model: Trained TrackNetV4 model
-        frame_paths: List of 3 image file paths
-        device: Torch device
-    Returns:
-        coordinates: List of prediction dictionaries for each frame
-    """
-    print("Running inference...")
-
-    # Preprocess input frames
-    input_tensor, original_sizes = preprocess_frames(frame_paths)
+def predict(model: TrackNet, frame_paths: List[str], device: torch.device) -> List[Dict]:
+    """Run prediction"""
+    input_tensor, transform_info = preprocess_frames(frame_paths)
     input_tensor = input_tensor.to(device)
 
-    # Model inference
     with torch.no_grad():
-        heatmaps = model(input_tensor)  # [1, 3, H, W]
+        heatmaps = model(input_tensor)
 
-    print(f"✓ Model output shape: {heatmaps.shape}")
-
-    # Postprocess predictions
-    coordinates = postprocess_predictions(heatmaps, original_sizes)
-
-    return coordinates
+    return postprocess_heatmaps(heatmaps, transform_info)
 
 
-def visualize_results(frame_paths, predictions, save_output=True):
-    """
-    Visualize prediction results on frames
-    Args:
-        frame_paths: List of frame paths
-        predictions: List of prediction dictionaries
-        save_output: Whether to save output images
-    """
-    print("\nGenerating visualization...")
+def visualize(frame_paths: List[str], predictions: List[Dict], output_dir: str = ".") -> None:
+    """Save visualization results"""
+    output_path = Path(output_dir)
+    output_path.mkdir(exist_ok=True)
 
-    for i, (frame_path, pred) in enumerate(zip(frame_paths, predictions)):
-        try:
-            # Load frame
-            frame = cv2.imread(str(frame_path))
-            if frame is None:
-                continue
+    for i, (path, pred) in enumerate(zip(frame_paths, predictions)):
+        img = cv2.imread(str(path))
+        if img is None:
+            continue
 
-            # Draw prediction
-            if pred['detected']:
-                x, y = int(pred['x']), int(pred['y'])
-                confidence = pred['confidence']
+        if pred['detected']:
+            x, y = int(pred['x']), int(pred['y'])
+            conf = pred['confidence']
 
-                # Draw circle and confidence
-                cv2.circle(frame, (x, y), 8, (0, 255, 0), -1)  # Green filled circle
-                cv2.circle(frame, (x, y), 12, (0, 255, 0), 2)  # Green outline
+            cv2.circle(img, (x, y), 8, (0, 255, 0), -1)
+            cv2.circle(img, (x, y), 12, (0, 255, 0), 2)
+            cv2.putText(img, f"Ball ({conf:.2f})", (x + 15, y - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            cv2.putText(img, f"({x}, {y})", (x + 15, y + 15),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        else:
+            cv2.putText(img, "Not Detected", (50, 50),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
 
-                # Add text with confidence
-                text = f"Ball ({confidence:.2f})"
-                cv2.putText(frame, text, (x + 15, y - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        cv2.putText(img, f"Frame {i + 1}", (50, img.shape[0] - 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
 
-                # Add coordinates
-                coord_text = f"({x}, {y})"
-                cv2.putText(frame, coord_text, (x + 15, y + 15),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-            else:
-                # Not detected
-                cv2.putText(frame, "Ball Not Detected", (50, 50),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-
-            # Add frame number
-            cv2.putText(frame, f"Frame {i + 1}", (50, frame.shape[0] - 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-
-            if save_output:
-                # Save result
-                output_path = f"prediction_result_frame_{i + 1:03d}.jpg"
-                cv2.imwrite(output_path, frame)
-                print(f"✓ Saved: {output_path}")
-
-        except Exception as e:
-            print(f"⚠️  Failed to process frame {i + 1}: {e}")
+        result_path = output_path / f"result_frame_{i + 1:03d}.jpg"
+        cv2.imwrite(str(result_path), img)
+        print(f"Saved: {result_path}")
 
 
 def main():
-    """Main prediction function"""
-    device = 'cpu'
-    # Configuration
+    # Device setup
     if torch.cuda.is_available():
-        device = 'cuda'
-        print("Using GPU for inference")
-    elif torch.backends.mps.is_available():
-        device = 'mps'
-        print("Using Apple Silicon GPU for inference")
+        device = torch.device('cuda')
+        print("Using GPU")
+    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        device = torch.device('mps')
+        print("Using MPS")
     else:
-        print("Using CPU for inference")
+        device = torch.device('cpu')
+        print("Using CPU")
 
-    checkpoint_path = "checkpoints/checkpoints/best.pth"  # Update this path as needed
-
-    # Hardcoded input frames - UPDATE THESE PATHS WITH YOUR ACTUAL IMAGES
+    # Paths - UPDATE THESE
+    checkpoint_path = "checkpoints/checkpoints/best.pth"
     frame_paths = [
-        "test/1.png",  # Frame 1
-        "test/2.png",  # Frame 2
-        "test/3.png"  # Frame 3
+        "test/1.png",
+        "test/2.png",
+        "test/3.png"
     ]
 
-    print("TrackNetV4 Ball Trajectory Prediction")
-    print("=" * 50)
-    print(f"Device: {device}")
     print(f"Checkpoint: {checkpoint_path}")
-    print(f"Input frames: {frame_paths}")
-    print("=" * 50)
+    print(f"Frames: {frame_paths}")
 
-    try:
-        # Check if checkpoint exists
-        if not Path(checkpoint_path).exists():
-            print(f"❌ Checkpoint not found: {checkpoint_path}")
-            print("Please update checkpoint_path in the script")
-            return
+    # Check files exist
+    if not Path(checkpoint_path).exists():
+        print(f"ERROR: Checkpoint not found: {checkpoint_path}")
+        return
 
-        # Check if input frames exist
-        missing_frames = []
-        for frame_path in frame_paths:
-            if not Path(frame_path).exists():
-                missing_frames.append(frame_path)
+    missing = [p for p in frame_paths if not Path(p).exists()]
+    if missing:
+        print(f"ERROR: Missing frames: {missing}")
+        return
 
-        if missing_frames:
-            print(f"❌ Missing frames: {missing_frames}")
-            print("Please update frame_paths in the script with actual image paths")
-            return
+    # Run prediction
+    model = load_model(checkpoint_path, device)
+    predictions = predict(model, frame_paths, device)
 
-        # Load model
-        model = load_model(checkpoint_path, device)
+    # Results
+    detected = sum(1 for p in predictions if p['detected'])
+    print(f"\nResults: {detected}/{len(predictions)} frames detected")
 
-        # Predict ball trajectory
-        predictions = predict_ball_trajectory(model, frame_paths, device)
+    for i, pred in enumerate(predictions):
+        if pred['detected']:
+            print(f"Frame {i + 1}: ({pred['x']:.1f}, {pred['y']:.1f}) conf={pred['confidence']:.3f}")
+        else:
+            print(f"Frame {i + 1}: Not detected")
 
-        # Display results summary
-        print("\n" + "=" * 50)
-        print("PREDICTION RESULTS SUMMARY")
-        print("=" * 50)
-
-        detected_count = sum(1 for pred in predictions if pred['detected'])
-        print(f"Frames processed: {len(predictions)}")
-        print(f"Ball detected in: {detected_count}/{len(predictions)} frames")
-        print()
-
-        for i, pred in enumerate(predictions):
-            if pred['detected']:
-                print(f"Frame {i + 1}: ✓ Ball at ({pred['x']:.1f}, {pred['y']:.1f}) [conf: {pred['confidence']:.3f}]")
-            else:
-                print(f"Frame {i + 1}: ✗ Ball not detected")
-
-        # Generate visualization
-        visualize_results(frame_paths, predictions)
-
-        print("\n" + "=" * 50)
-        print("✓ Prediction completed successfully!")
-        print("Check the generated 'prediction_result_frame_*.jpg' files")
-        print("=" * 50)
-
-    except Exception as e:
-        print(f"❌ Prediction failed: {e}")
-        import traceback
-        traceback.print_exc()
+    # Save visualization
+    visualize(frame_paths, predictions)
+    print("\nDone! Check result_frame_*.jpg files")
 
 
 if __name__ == "__main__":
     main()
-
-"""
-Usage Instructions:
-1. Update checkpoint_path to point to your trained model
-2. Update frame_paths to point to your 3 consecutive input frames
-3. Run: python predict.py
-
-The script will:
-- Load the trained TrackNetV4 model
-- Process 3 input frames 
-- Output ball coordinates for each frame
-- Generate visualization images with predictions
-- Print detailed results to console
-
-Input Requirements:
-- 3 consecutive frames (any common image format)
-- Trained TrackNetV4 model checkpoint (.pth file)
-
-Output:
-- Ball coordinates in original image coordinate system
-- Confidence scores for each detection
-- Visualization images with marked ball positions
-"""
