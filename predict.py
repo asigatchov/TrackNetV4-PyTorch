@@ -5,11 +5,12 @@ Input: 3 consecutive frames
 Output: Ball coordinates for 3 frames
 """
 
+from pathlib import Path
+
+import cv2
 import torch
 import torch.nn.functional as F
-import cv2
-import numpy as np
-from pathlib import Path
+
 from tracknet import TrackNetV4
 
 
@@ -226,15 +227,24 @@ def visualize_results(frame_paths, predictions, save_output=True):
 
 def main():
     """Main prediction function"""
+    device = 'cpu'
     # Configuration
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if torch.cuda.is_available():
+        device = 'cuda'
+        print("Using GPU for inference")
+    elif torch.backends.mps.is_available():
+        device = 'mps'
+        print("Using Apple Silicon GPU for inference")
+    else:
+        print("Using CPU for inference")
+
     checkpoint_path = "checkpoints/checkpoints/best.pth"  # Update this path as needed
 
     # Hardcoded input frames - UPDATE THESE PATHS WITH YOUR ACTUAL IMAGES
     frame_paths = [
-        "frame_001.jpg",  # Frame 1
-        "frame_002.jpg",  # Frame 2
-        "frame_003.jpg"  # Frame 3
+        "test/1.png",  # Frame 1
+        "test/2.png",  # Frame 2
+        "test/3.png"  # Frame 3
     ]
 
     print("TrackNetV4 Ball Trajectory Prediction")

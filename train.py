@@ -304,8 +304,6 @@ class Trainer:
     def setup_model(self):
         """Initialize model and optimizer"""
         self.model = TrackNetV4()
-        # MIMO output
-        self.model.conv2d_18 = nn.Conv2d(64, DATASET_CONFIG['output_frames'], 1)
 
         # Weight initialization
         self.model.apply(init_weights)
