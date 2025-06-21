@@ -3,67 +3,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class MotionPromptLayer(nn.Module):
-    """Motion prompt layer with learnable parameters for motion attention."""
+class TrackNet(nn.Module):
+    """TrackNet with U-Net skip connections for shuttlecock tracking"""
 
-    def __init__(self):
-        super(MotionPromptLayer, self).__init__()
-        self.slope = nn.Parameter(torch.tensor(16.24))
-        self.shift = nn.Parameter(torch.tensor(0.28))
-
-    def forward(self, reshaped_input):
-        # reshaped_input: [B, 3, 3, H, W]
-        batch_size, frames, channels, height, width = reshaped_input.shape
-
-        # Convert to grayscale and compute frame differences
-        frame_0 = reshaped_input[:, 0].mean(dim=1, keepdim=True)  # [B, 1, H, W]
-        frame_1 = reshaped_input[:, 1].mean(dim=1, keepdim=True)  # [B, 1, H, W]
-        frame_2 = reshaped_input[:, 2].mean(dim=1, keepdim=True)  # [B, 1, H, W]
-
-        # Compute absolute differences
-        diff_01 = torch.abs(frame_1 - frame_0)
-        diff_12 = torch.abs(frame_2 - frame_1)
-        frame_diff = torch.cat([diff_01, diff_12], dim=1)  # [B, 2, H, W]
-
-        # Apply power normalization
-        motion_attention = torch.sigmoid(self.slope * frame_diff + self.shift)
-
-        # Return multiple outputs as in original architecture
-        return [
-            motion_attention.unsqueeze(1).expand(-1, 3, -1, -1, -1),  # [B, 2, 3, H, W]
-            motion_attention,  # [B, 2, H, W]
-            []  # Empty tuple as in original
-        ]
-
-
-class MotionIncorporationLayerV1(nn.Module):
-    """Motion incorporation layer for fusing visual and motion features."""
-
-    def __init__(self):
-        super(MotionIncorporationLayerV1, self).__init__()
-
-    def forward(self, visual_features, motion_attention):
-        # visual_features: [B, 3, H, W] from conv2d_7
-        # motion_attention: [B, 2, H, W] from motion_prompt_layer
-
-        # Use mean of motion attention for all 3 channels
-        motion_mean = motion_attention.mean(dim=1, keepdim=True)  # [B, 1, H, W]
-        motion_expanded = motion_mean.expand_as(visual_features)  # [B, 3, H, W]
-
-        # Element-wise multiplication for motion-aware enhancement
-        enhanced_features = visual_features * motion_expanded
-
-        return enhanced_features
-
-
-class TrackNetV4(nn.Module):
-    """TrackNetV4: Enhanced object tracking with motion attention maps."""
-
-    def __init__(self):
-        super(TrackNetV4, self).__init__()
+    def __init__(self, input_frames=3, output_frames=3):
+        super(TrackNet, self).__init__()
 
         # Encoder
-        self.conv2d = nn.Conv2d(9, 64, 3, padding=1)
+        self.conv2d = nn.Conv2d(input_frames * 3, 64, 3, padding=1)
         self.bn = nn.BatchNorm2d(64)
         self.conv2d_1 = nn.Conv2d(64, 64, 3, padding=1)
         self.bn_1 = nn.BatchNorm2d(64)
@@ -71,96 +18,113 @@ class TrackNetV4(nn.Module):
 
         self.conv2d_2 = nn.Conv2d(64, 128, 3, padding=1)
         self.bn_2 = nn.BatchNorm2d(128)
+        self.conv2d_3 = nn.Conv2d(128, 128, 3, padding=1)
+        self.bn_3 = nn.BatchNorm2d(128)
         self.max_pooling2d_1 = nn.MaxPool2d(2, stride=2)
 
-        self.conv2d_3 = nn.Conv2d(128, 256, 3, padding=1)
-        self.bn_3 = nn.BatchNorm2d(256)
+        self.conv2d_4 = nn.Conv2d(128, 256, 3, padding=1)
+        self.bn_4 = nn.BatchNorm2d(256)
+        self.conv2d_5 = nn.Conv2d(256, 256, 3, padding=1)
+        self.bn_5 = nn.BatchNorm2d(256)
+        self.conv2d_6 = nn.Conv2d(256, 256, 3, padding=1)
+        self.bn_6 = nn.BatchNorm2d(256)
         self.max_pooling2d_2 = nn.MaxPool2d(2, stride=2)
 
-        # Decoder
+        self.conv2d_7 = nn.Conv2d(256, 512, 3, padding=1)
+        self.bn_7 = nn.BatchNorm2d(512)
+        self.conv2d_8 = nn.Conv2d(512, 512, 3, padding=1)
+        self.bn_8 = nn.BatchNorm2d(512)
+        self.conv2d_9 = nn.Conv2d(512, 512, 3, padding=1)
+        self.bn_9 = nn.BatchNorm2d(512)
+
+        # Decoder with skip connections
         self.up_sampling2d = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-        self.conv2d_4 = nn.Conv2d(512, 256, 3, padding=1)
-        self.bn_4 = nn.BatchNorm2d(256)
+        self.conv2d_10 = nn.Conv2d(768, 256, 3, padding=1)  # 512 + 256 skip
+        self.bn_10 = nn.BatchNorm2d(256)
+        self.conv2d_11 = nn.Conv2d(256, 256, 3, padding=1)
+        self.bn_11 = nn.BatchNorm2d(256)
+        self.conv2d_12 = nn.Conv2d(256, 256, 3, padding=1)
+        self.bn_12 = nn.BatchNorm2d(256)
 
         self.up_sampling2d_1 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-        self.conv2d_5 = nn.Conv2d(384, 128, 3, padding=1)
-        self.bn_5 = nn.BatchNorm2d(128)
+        self.conv2d_13 = nn.Conv2d(384, 128, 3, padding=1)  # 256 + 128 skip
+        self.bn_13 = nn.BatchNorm2d(128)
+        self.conv2d_14 = nn.Conv2d(128, 128, 3, padding=1)
+        self.bn_14 = nn.BatchNorm2d(128)
 
         self.up_sampling2d_2 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-        self.conv2d_6 = nn.Conv2d(192, 64, 3, padding=1)
-        self.bn_6 = nn.BatchNorm2d(64)
+        self.conv2d_15 = nn.Conv2d(192, 64, 3, padding=1)  # 128 + 64 skip
+        self.bn_15 = nn.BatchNorm2d(64)
+        self.conv2d_16 = nn.Conv2d(64, 64, 3, padding=1)
+        self.bn_16 = nn.BatchNorm2d(64)
 
-        self.conv2d_7 = nn.Conv2d(64, 3, 3, padding=1)
+        # MIMO output
+        self.conv2d_17 = nn.Conv2d(64, output_frames, 1, padding=0)
 
-        # Motion modules
-        self.motion_prompt_layer = MotionPromptLayer()
-        self.motion_incorporation_layer_v1 = MotionIncorporationLayerV1()
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.uniform_(m.bias)
 
     def forward(self, x):
-        # Input: [B, 9, H, W]
-
-        # Reshape for motion processing
-        batch_size, channels, height, width = x.shape
-        reshaped_input = x.view(batch_size, 3, 3, height, width)  # [B, 3, 3, H, W]
-
-        # Encoder path
+        """Forward pass: [B, 9, 288, 512] -> [B, 3, 288, 512]"""
+        # Encoder
         x1 = F.relu(self.bn(self.conv2d(x)))
         x2 = F.relu(self.bn_1(self.conv2d_1(x1)))
         p1 = self.max_pooling2d(x2)
 
         x3 = F.relu(self.bn_2(self.conv2d_2(p1)))
-        p2 = self.max_pooling2d_1(x3)
+        x4 = F.relu(self.bn_3(self.conv2d_3(x3)))
+        p2 = self.max_pooling2d_1(x4)
 
-        x4 = F.relu(self.bn_3(self.conv2d_3(p2)))
-        p3 = self.max_pooling2d_2(x4)
+        x5 = F.relu(self.bn_4(self.conv2d_4(p2)))
+        x6 = F.relu(self.bn_5(self.conv2d_5(x5)))
+        x7 = F.relu(self.bn_6(self.conv2d_6(x6)))
+        p3 = self.max_pooling2d_2(x7)
 
-        # Decoder path with skip connections
-        up1 = self.up_sampling2d(p3)
-        cat1 = torch.cat([x4, up1], dim=1)  # Skip connection
-        d1 = F.relu(self.bn_4(self.conv2d_4(cat1)))
+        x8 = F.relu(self.bn_7(self.conv2d_7(p3)))
+        x9 = F.relu(self.bn_8(self.conv2d_8(x8)))
+        x10 = F.relu(self.bn_9(self.conv2d_9(x9)))
 
-        up2 = self.up_sampling2d_1(d1)
-        cat2 = torch.cat([x3, up2], dim=1)  # Skip connection
-        d2 = F.relu(self.bn_5(self.conv2d_5(cat2)))
+        # Decoder
+        up1 = self.up_sampling2d(x10)
+        cat1 = torch.cat([x7, up1], dim=1)
+        d1 = F.relu(self.bn_10(self.conv2d_10(cat1)))
+        d2 = F.relu(self.bn_11(self.conv2d_11(d1)))
+        d3 = F.relu(self.bn_12(self.conv2d_12(d2)))
 
-        up3 = self.up_sampling2d_2(d2)
-        cat3 = torch.cat([x2, up3], dim=1)  # Skip connection
-        d3 = F.relu(self.bn_6(self.conv2d_6(cat3)))
+        up2 = self.up_sampling2d_1(d3)
+        cat2 = torch.cat([x4, up2], dim=1)
+        d4 = F.relu(self.bn_13(self.conv2d_13(cat2)))
+        d5 = F.relu(self.bn_14(self.conv2d_14(d4)))
 
-        # Visual features before motion fusion
-        visual_features = self.conv2d_7(d3)  # [B, 3, H, W]
+        up3 = self.up_sampling2d_2(d5)
+        cat3 = torch.cat([x2, up3], dim=1)
+        d6 = F.relu(self.bn_15(self.conv2d_15(cat3)))
+        d7 = F.relu(self.bn_16(self.conv2d_16(d6)))
 
-        # Motion attention processing
-        motion_outputs = self.motion_prompt_layer(reshaped_input)
-        motion_attention = motion_outputs[1]  # [B, 2, H, W]
-
-        # Motion-aware fusion
-        enhanced_features = self.motion_incorporation_layer_v1(visual_features, motion_attention)
-
-        # Final output with sigmoid
-        output = torch.sigmoid(enhanced_features)
-        return output
+        return torch.sigmoid(self.conv2d_17(d7))
 
 
 class WeightedBCELoss(nn.Module):
-    """Weighted binary cross entropy loss for imbalanced data."""
-
-    def __init__(self):
-        super(WeightedBCELoss, self).__init__()
+    """Weighted BCE Loss: w = y_pred"""
 
     def forward(self, y_pred, y_true):
         eps = 1e-7
         y_pred = torch.clamp(y_pred, eps, 1 - eps)
-        w = y_pred.detach()  # 修正：w应该等于预测值
-        loss = -(
+        w = y_pred.detach()
+        return -(
                 (1 - w) ** 2 * y_true * torch.log(y_pred) +
                 w ** 2 * (1 - y_true) * torch.log(1 - y_pred)
         ).mean()
-        return loss
 
 
 def postprocess_heatmap(heatmap, threshold=0.5):
-    """Extract ball coordinates from heatmap."""
+    """Extract coordinates from heatmap"""
     batch_size, channels, height, width = heatmap.shape
     coordinates = []
 
@@ -181,13 +145,12 @@ def postprocess_heatmap(heatmap, threshold=0.5):
 
 
 if __name__ == "__main__":
-    model = TrackNetV4()
+    model = TrackNet(input_frames=3, output_frames=3)
     criterion = WeightedBCELoss()
     optimizer = torch.optim.Adadelta(model.parameters(), lr=1.0)
 
-    # Test forward pass
     x = torch.randn(1, 9, 288, 512)
-    y = torch.randint(0, 2, (1, 3, 288, 512)).float()
+    y = torch.rand(1, 3, 288, 512)
 
     output = model(x)
     loss = criterion(output, y)
@@ -198,9 +161,5 @@ if __name__ == "__main__":
     coords = postprocess_heatmap(output)
     print(f"Coordinates: {coords[0]}")
 
-    # Parameter count
-    motion_params = sum(p.numel() for p in model.motion_prompt_layer.parameters())
     total_params = sum(p.numel() for p in model.parameters())
-
-    print(f"Motion prompt parameters: {motion_params}")
-    print(f"Total parameters: {total_params:,}")
+    print(f"Parameters: {total_params:,}")

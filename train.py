@@ -1,23 +1,22 @@
 #!/usr/bin/env python3
 """
-TrackNetV4 Badminton Tracking Network Training Script
-- Supports CUDA/MPS/CPU automatic selection
-- Supports training from scratch and resume from checkpoint
+TrackNet Badminton Tracking Network Training Script
+- CUDA/MPS/CPU automatic device selection
+- Training from scratch and resume from checkpoint
 - MIMO design with automatic saving per epoch
-- Auto-save on forced termination with signal handling
-- Optimized plotting strategy: only plot when saving
-- Early directory structure setup
+- Emergency save on forced termination with signal handling
+- Comprehensive plotting strategy with batch-level tracking
+- Complete directory structure setup
 """
 
 import argparse
-import json
 import logging
-import time
 import signal
 import sys
+import time
 import atexit
 from pathlib import Path
-from typing import Dict, Tuple, Optional
+from typing import Optional
 
 import matplotlib.pyplot as plt
 import torch
@@ -28,13 +27,13 @@ from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
 from dataset_controller.ball_tracking_data_reader import BallTrackingDataset
-from tracknet import TrackNetV4, WeightedBCELoss
+from tracknet import TrackNet, WeightedBCELoss
 
-# Global variable for signal handling
+# Global trainer instance for signal handling
 _trainer_instance = None
 
-# Default configuration
-DEFAULT_CONFIG = {
+# Training configuration
+CONFIG = {
     "batch_size": 2,
     "num_epochs": 30,
     "learning_rate": 1.0,
@@ -44,12 +43,11 @@ DEFAULT_CONFIG = {
     "input_width": 512,
     "heatmap_radius": 3,
     "detection_threshold": 0.5,
-    "distance_threshold": 4,
     "scheduler_factor": 0.5,
     "scheduler_patience": 8,
     "early_stop_patience": 15,
     "train_split": 0.8,
-    "save_interval": 1,  # Save every epoch
+    "save_interval": 1,
 }
 
 DATASET_CONFIG = {
@@ -57,54 +55,39 @@ DATASET_CONFIG = {
     "output_frames": 3,  # MIMO design
     "normalize_coords": True,
     "normalize_pixels": True,
-    "video_ext": ".mp4",
-    "csv_suffix": "_ball.csv"
 }
 
 
 def setup_directories(save_dir):
-    """Setup all required directories at script startup"""
+    """Setup complete directory structure at startup"""
     save_path = Path(save_dir)
-
-    # Create main save directory
     save_path.mkdir(parents=True, exist_ok=True)
 
-    # Create subdirectories for different types of saves
     checkpoints_dir = save_path / "checkpoints"
     plots_dir = save_path / "plots"
     logs_dir = save_path / "logs"
 
-    checkpoints_dir.mkdir(exist_ok=True)
-    plots_dir.mkdir(exist_ok=True)
-    logs_dir.mkdir(exist_ok=True)
+    for dir_path in [checkpoints_dir, plots_dir, logs_dir]:
+        dir_path.mkdir(exist_ok=True)
 
     print(f"✓ Directory structure created: {save_path}")
-    print(f"  - Checkpoints: {checkpoints_dir}")
-    print(f"  - Plots: {plots_dir}")
-    print(f"  - Logs: {logs_dir}")
-
     return save_path, checkpoints_dir, plots_dir, logs_dir
 
 
 def signal_handler(signum, frame):
-    """Signal handler for graceful termination on Ctrl+C or SIGTERM"""
+    """Graceful termination on Ctrl+C or SIGTERM"""
     global _trainer_instance
 
-    signal_names = {
-        signal.SIGINT: "SIGINT (Ctrl+C)",
-        signal.SIGTERM: "SIGTERM"
-    }
-
+    signal_names = {signal.SIGINT: "SIGINT (Ctrl+C)", signal.SIGTERM: "SIGTERM"}
     signal_name = signal_names.get(signum, f"Signal {signum}")
-    print(f"\n⚠️  Received {signal_name} signal, safely saving model and plots...")
 
-    if _trainer_instance is not None:
+    print(f"\n⚠️  Received {signal_name}, saving model and plots...")
+
+    if _trainer_instance:
         try:
-            # Save emergency checkpoint with model state and training plots
-            emergency_path = _trainer_instance.checkpoints_dir / f'emergency_save_epoch_{_trainer_instance.current_epoch:03d}.pth'
+            emergency_path = _trainer_instance.checkpoints_dir / f'emergency_epoch_{_trainer_instance.current_epoch:03d}.pth'
             _trainer_instance.save_emergency_checkpoint(emergency_path)
             print(f"✓ Emergency save completed: {emergency_path}")
-            print(f"✓ Training plots updated")
         except Exception as e:
             print(f"❌ Emergency save failed: {e}")
 
@@ -113,13 +96,13 @@ def signal_handler(signum, frame):
 
 
 def cleanup_on_exit():
-    """Cleanup function called on program exit"""
+    """Cleanup function on program exit"""
     global _trainer_instance
-    if _trainer_instance is not None and hasattr(_trainer_instance, 'training_in_progress'):
+    if _trainer_instance and hasattr(_trainer_instance, 'training_in_progress'):
         if _trainer_instance.training_in_progress:
-            print("\n🔄 Program exiting normally, performing final save...")
+            print("\n🔄 Program exiting, performing final save...")
             try:
-                exit_path = _trainer_instance.checkpoints_dir / f'exit_save_epoch_{_trainer_instance.current_epoch:03d}.pth'
+                exit_path = _trainer_instance.checkpoints_dir / f'exit_epoch_{_trainer_instance.current_epoch:03d}.pth'
                 _trainer_instance.save_emergency_checkpoint(exit_path)
                 print(f"✓ Exit save completed: {exit_path}")
             except Exception as e:
@@ -127,20 +110,18 @@ def cleanup_on_exit():
 
 
 def get_device_and_config():
-    """Automatically select the best available device"""
+    """Auto-select best available device"""
     if torch.cuda.is_available():
         device = torch.device('cuda')
         config = {"num_workers": 4, "pin_memory": True, "persistent_workers": True}
         print(f"✓ CUDA: {torch.cuda.get_device_name()}")
 
-        # Adjust batch size based on GPU memory
+        # Memory-based batch size adjustment
         memory_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
         if memory_gb < 8:
             config["batch_multiplier"] = 0.5
 
-        # CUDA optimizations
         torch.backends.cudnn.benchmark = True
-        torch.backends.cudnn.deterministic = False
 
     elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
         device = torch.device('mps')
@@ -156,14 +137,11 @@ def get_device_and_config():
 
 
 def init_weights(m):
-    """Initialize weights using uniform distribution as per paper requirements"""
+    """Initialize weights per paper requirements"""
     if isinstance(m, nn.Conv2d):
         nn.init.uniform_(m.weight)
         if m.bias is not None:
-            nn.init.zeros_(m.bias)
-    elif isinstance(m, nn.BatchNorm2d):
-        nn.init.ones_(m.weight)
-        nn.init.zeros_(m.bias)
+            nn.init.uniform_(m.bias)
 
 
 def create_gaussian_heatmap(x, y, visibility, height, width, radius=3.0):
@@ -180,45 +158,39 @@ def create_gaussian_heatmap(x, y, visibility, height, width, radius=3.0):
     y_min, y_max = max(0, y_pixel - kernel_size), min(height, y_pixel + kernel_size + 1)
 
     y_coords, x_coords = torch.meshgrid(
-        torch.arange(y_min, y_max),
-        torch.arange(x_min, x_max),
-        indexing='ij'
+        torch.arange(y_min, y_max), torch.arange(x_min, x_max), indexing='ij'
     )
 
     dist_sq = (x_coords - x_pixel) ** 2 + (y_coords - y_pixel) ** 2
-    gaussian_values = torch.exp(-dist_sq / (2 * radius ** 2))
-    gaussian_values[gaussian_values < 0.01] = 0
+    gaussian = torch.exp(-dist_sq / (2 * radius ** 2))
+    gaussian[gaussian < 0.01] = 0
 
-    heatmap[y_min:y_max, x_min:x_max] = gaussian_values
+    heatmap[y_min:y_max, x_min:x_max] = gaussian
     return heatmap
 
 
 def collate_fn(batch):
-    """Custom collate function for batch processing"""
-    config = DEFAULT_CONFIG
+    """Custom collate function with heatmap generation"""
     frames_list, heatmaps_list = [], []
 
     for frames, labels in batch:
-        # Resize input frames
+        # Resize to paper standard: 512×288
         frames = F.interpolate(
             frames.unsqueeze(0),
-            size=(config["input_height"], config["input_width"]),
-            mode='bilinear',
-            align_corners=False
+            size=(CONFIG["input_height"], CONFIG["input_width"]),
+            mode='bilinear', align_corners=False
         ).squeeze(0)
         frames_list.append(frames)
 
-        # Generate heatmaps
-        heatmaps = torch.zeros(len(labels), config["input_height"], config["input_width"])
+        # Generate MIMO heatmaps
+        heatmaps = torch.zeros(len(labels), CONFIG["input_height"], CONFIG["input_width"])
         for i, label_dict in enumerate(labels):
             if isinstance(label_dict, dict):
                 heatmap = create_gaussian_heatmap(
-                    label_dict['x'].item(),
-                    label_dict['y'].item(),
+                    label_dict['x'].item(), label_dict['y'].item(),
                     label_dict['visibility'].item(),
-                    config["input_height"],
-                    config["input_width"],
-                    config["heatmap_radius"]
+                    CONFIG["input_height"], CONFIG["input_width"],
+                    CONFIG["heatmap_radius"]
                 )
                 heatmaps[i] = heatmap
         heatmaps_list.append(heatmaps)
@@ -227,7 +199,7 @@ def collate_fn(batch):
 
 
 def load_dataset(data_dir):
-    """Load and combine datasets from multiple match directories"""
+    """Load and combine datasets from match directories"""
     data_dir = Path(data_dir)
     match_dirs = sorted([d for d in data_dir.iterdir() if d.is_dir() and d.name.startswith('match')])
 
@@ -242,7 +214,7 @@ def load_dataset(data_dir):
                 combined_dataset = dataset if combined_dataset is None else combined_dataset + dataset
                 print(f"✓ {match_dir.name}: {len(dataset)} samples")
         except Exception as e:
-            print(f"✗ {match_dir.name} loading failed: {e}")
+            print(f"✗ {match_dir.name} failed: {e}")
 
     if combined_dataset is None:
         raise ValueError("No usable datasets found")
@@ -257,16 +229,27 @@ class Trainer:
         self.device = device
         self.device_config = device_config
 
-        # Directory structure
+        # Directory paths
         self.save_dir = save_dir
         self.checkpoints_dir = checkpoints_dir
         self.plots_dir = plots_dir
         self.logs_dir = logs_dir
 
-        # Training state tracking
+        # Training state
         self.current_epoch = 0
         self.current_batch = 0
         self.training_in_progress = False
+        self.start_epoch = 0
+        self.best_loss = float('inf')
+
+        # Metrics tracking
+        self.train_losses = []
+        self.val_losses = []
+        self.learning_rates = []
+        self.batch_train_losses = []
+        self.batch_numbers = []
+        self.epoch_boundaries = []
+        self.total_batches = 0
 
         # Setup logging
         logging.basicConfig(
@@ -279,37 +262,23 @@ class Trainer:
         )
         self.logger = logging.getLogger(__name__)
 
-        # Training state
-        self.start_epoch = 0
-        self.best_loss = float('inf')
-
-        # Epoch-level metrics (for compatibility)
-        self.train_losses = []
-        self.val_losses = []
-        self.learning_rates = []
-
-        # Batch-level metrics (for detailed plotting)
-        self.batch_train_losses = []
-        self.batch_numbers = []
-        self.epoch_boundaries = []  # Record batch positions at epoch end
-        self.total_batches = 0
-
-        # Initialize model
         self.setup_model()
 
-        # Load checkpoint if resuming
         if args.resume:
             self.load_checkpoint(args.resume)
 
     def setup_model(self):
-        """Initialize model and optimizer"""
-        self.model = TrackNetV4()
+        """Initialize model per paper specifications"""
+        self.model = TrackNet(
+            input_frames=DATASET_CONFIG["input_frames"],
+            output_frames=DATASET_CONFIG["output_frames"]
+        )
 
-        # Weight initialization
+        # Paper-specified weight initialization
         self.model.apply(init_weights)
         self.model = self.model.to(self.device)
 
-        # Loss function and optimizer
+        # Paper-specified optimizer and loss
         self.criterion = WeightedBCELoss()
         self.optimizer = optim.Adadelta(
             self.model.parameters(),
@@ -318,16 +287,15 @@ class Trainer:
         )
         self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer,
-            factor=DEFAULT_CONFIG["scheduler_factor"],
-            patience=DEFAULT_CONFIG["scheduler_patience"]
+            factor=CONFIG["scheduler_factor"],
+            patience=CONFIG["scheduler_patience"]
         )
 
-        # Count parameters
         total_params = sum(p.numel() for p in self.model.parameters())
         self.logger.info(f"Model parameters: {total_params:,}")
 
     def save_checkpoint(self, epoch, is_best=False, checkpoint_type="regular"):
-        """Save checkpoint and plot training curves when saving"""
+        """Save checkpoint with comprehensive state"""
         checkpoint = {
             'epoch': epoch,
             'current_batch': self.current_batch,
@@ -336,41 +304,35 @@ class Trainer:
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict(),
             'best_loss': self.best_loss,
-
-            # Epoch-level data
             'train_losses': self.train_losses,
             'val_losses': self.val_losses,
             'learning_rates': self.learning_rates,
-
-            # Batch-level data
             'batch_train_losses': self.batch_train_losses,
             'batch_numbers': self.batch_numbers,
             'epoch_boundaries': self.epoch_boundaries,
-
             'config': vars(self.args),
             'checkpoint_type': checkpoint_type,
             'save_time': time.time()
         }
 
-        # Save latest
+        # Save checkpoints
         torch.save(checkpoint, self.checkpoints_dir / f'epoch_{epoch:03d}.pth')
         torch.save(checkpoint, self.checkpoints_dir / 'latest.pth')
 
-        # Save best
         if is_best:
             torch.save(checkpoint, self.checkpoints_dir / 'best.pth')
             self.logger.info(f"✓ Best model Epoch {epoch}: {self.best_loss:.6f}")
 
-        # Plot training curves when saving
+        # Generate plots
         try:
             if len(self.batch_train_losses) > 0:
                 self.plot_curves(epoch)
                 self.logger.info(f"✓ Training curves updated")
         except Exception as e:
-            self.logger.warning(f"⚠️ Failed to generate training curves: {e}")
+            self.logger.warning(f"⚠️ Plot generation failed: {e}")
 
     def save_emergency_checkpoint(self, save_path):
-        """Save emergency checkpoint including model state and training plots"""
+        """Emergency save with full state preservation"""
         checkpoint = {
             'epoch': self.current_epoch,
             'current_batch': self.current_batch,
@@ -379,52 +341,44 @@ class Trainer:
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict(),
             'best_loss': self.best_loss,
-
-            # Epoch-level data
             'train_losses': self.train_losses,
             'val_losses': self.val_losses,
             'learning_rates': self.learning_rates,
-
-            # Batch-level data
             'batch_train_losses': self.batch_train_losses,
             'batch_numbers': self.batch_numbers,
             'epoch_boundaries': self.epoch_boundaries,
-
             'config': vars(self.args),
             'checkpoint_type': "emergency",
             'save_time': time.time()
         }
 
-        # Save model checkpoint
         torch.save(checkpoint, save_path)
-        # Also save as latest checkpoint
         torch.save(checkpoint, self.checkpoints_dir / 'latest.pth')
 
-        # Generate training curves during emergency save
+        # Generate emergency plots
         try:
-            if len(self.batch_train_losses) > 0:  # Ensure batch data exists for plotting
+            if len(self.batch_train_losses) > 0:
                 self.plot_curves(self.current_epoch)
-                self.logger.info(f"✓ Training curves saved")
+                self.logger.info(f"✓ Emergency plots saved")
         except Exception as e:
-            self.logger.warning(f"⚠️ Failed to generate training curves: {e}")
+            self.logger.warning(f"⚠️ Emergency plot failed: {e}")
 
-        # Log detailed emergency save information
+        # Log emergency details
         self.logger.info(f"📊 Emergency save details:")
-        self.logger.info(f"   - Model checkpoint: {save_path}")
-        self.logger.info(f"   - Current Epoch: {self.current_epoch}")
-        self.logger.info(f"   - Current Batch: {self.current_batch}")
-        self.logger.info(f"   - Total Batches: {self.total_batches}")
-        if len(self.batch_train_losses) > 0:
-            self.logger.info(f"   - Latest training loss: {self.batch_train_losses[-1]:.6f}")
-        if len(self.val_losses) > 0:
-            self.logger.info(f"   - Latest validation loss: {self.val_losses[-1]:.6f}")
-        self.logger.info(f"   - Best validation loss: {self.best_loss:.6f}")
+        self.logger.info(f"   - Checkpoint: {save_path}")
+        self.logger.info(f"   - Epoch: {self.current_epoch}, Batch: {self.current_batch}")
+        self.logger.info(f"   - Total batches: {self.total_batches}")
+        if self.batch_train_losses:
+            self.logger.info(f"   - Latest train loss: {self.batch_train_losses[-1]:.6f}")
+        if self.val_losses:
+            self.logger.info(f"   - Latest val loss: {self.val_losses[-1]:.6f}")
+        self.logger.info(f"   - Best loss: {self.best_loss:.6f}")
 
     def load_checkpoint(self, checkpoint_path):
-        """Load checkpoint from file"""
+        """Load checkpoint with full state restoration"""
         checkpoint_path = Path(checkpoint_path)
         if not checkpoint_path.exists():
-            self.logger.warning(f"Checkpoint does not exist: {checkpoint_path}")
+            self.logger.warning(f"Checkpoint not found: {checkpoint_path}")
             return
 
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
@@ -435,27 +389,24 @@ class Trainer:
 
         self.start_epoch = checkpoint['epoch'] + 1
         self.best_loss = checkpoint['best_loss']
-
-        # Load epoch-level data
         self.train_losses = checkpoint['train_losses']
         self.val_losses = checkpoint['val_losses']
         self.learning_rates = checkpoint['learning_rates']
 
-        # Load batch-level data (backward compatibility)
+        # Restore batch-level tracking
         self.batch_train_losses = checkpoint.get('batch_train_losses', [])
         self.batch_numbers = checkpoint.get('batch_numbers', [])
         self.epoch_boundaries = checkpoint.get('epoch_boundaries', [])
         self.total_batches = checkpoint.get('total_batches', 0)
 
-        # Display special info for emergency checkpoints
         checkpoint_type = checkpoint.get('checkpoint_type', 'regular')
         if checkpoint_type == 'emergency':
-            self.logger.info(f"✓ Resumed from emergency checkpoint: Epoch {self.start_epoch}, Total Batch {self.total_batches}")
+            self.logger.info(f"✓ Resumed from emergency checkpoint: Epoch {self.start_epoch}")
         else:
-            self.logger.info(f"✓ Continuing from Epoch {self.start_epoch}, Total Batch {self.total_batches}")
+            self.logger.info(f"✓ Resumed from Epoch {self.start_epoch}")
 
     def train_epoch(self, epoch, train_loader):
-        """Train one epoch"""
+        """Train single epoch with batch tracking"""
         self.model.train()
         total_loss = 0.0
         self.current_epoch = epoch
@@ -473,7 +424,6 @@ class Trainer:
             loss = self.criterion(outputs, targets)
             loss.backward()
 
-            # Gradient clipping
             if self.args.grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.grad_clip)
 
@@ -481,16 +431,14 @@ class Trainer:
 
             total_loss += loss.item()
 
-            # Record batch-level loss
+            # Track batch-level metrics
             self.batch_train_losses.append(loss.item())
             self.batch_numbers.append(self.total_batches)
 
-            # Update progress bar display without plotting
             pbar.set_postfix({'Loss': f'{loss.item():.6f}', 'Batch': self.total_batches})
 
-        # Record epoch end position
+        # Mark epoch boundary
         self.epoch_boundaries.append(self.total_batches)
-
         return total_loss / len(train_loader)
 
     def validate(self, val_loader):
@@ -510,15 +458,16 @@ class Trainer:
         return total_loss / len(val_loader)
 
     def plot_curves(self, epoch):
-        """Plot training curves - comprehensive batch-level and epoch-level charts"""
+        """Comprehensive training curves with batch and epoch levels"""
         if len(self.batch_train_losses) < 2:
             return
 
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
 
-        # Left plot: batch-level training loss curve
-        if len(self.batch_train_losses) > 0:
-            ax1.plot(self.batch_numbers, self.batch_train_losses, 'b-', alpha=0.7, linewidth=1, label='Training Loss (batch)')
+        # Batch-level loss curve with epoch markers
+        if self.batch_train_losses:
+            ax1.plot(self.batch_numbers, self.batch_train_losses, 'b-', alpha=0.7,
+                     linewidth=1, label='Training Loss (batch)')
 
             # Mark epoch boundaries
             for i, boundary in enumerate(self.epoch_boundaries):
@@ -527,10 +476,10 @@ class Trainer:
                     ax1.text(boundary, ax1.get_ylim()[1] * 0.95, f'E{i + 1}',
                              rotation=90, ha='right', va='top', fontsize=8, color='red')
 
-            # Add epoch-level validation loss if available
-            if len(self.val_losses) > 0:
-                epoch_x_positions = self.epoch_boundaries[:len(self.val_losses)]
-                ax1.plot(epoch_x_positions, self.val_losses, 'ro-', linewidth=2,
+            # Overlay epoch-level validation loss
+            if self.val_losses:
+                epoch_positions = self.epoch_boundaries[:len(self.val_losses)]
+                ax1.plot(epoch_positions, self.val_losses, 'ro-', linewidth=2,
                          markersize=4, label='Validation Loss (epoch)', alpha=0.8)
 
         ax1.set_xlabel('Batch')
@@ -539,10 +488,10 @@ class Trainer:
         ax1.legend()
         ax1.grid(True, alpha=0.3)
 
-        # Right plot: epoch-level learning rate curve
-        if len(self.learning_rates) > 0:
-            epochs_range = range(1, len(self.learning_rates) + 1)
-            ax2.plot(epochs_range, self.learning_rates, 'g-', linewidth=2, marker='o', markersize=3)
+        # Learning rate schedule
+        if self.learning_rates:
+            epochs = range(1, len(self.learning_rates) + 1)
+            ax2.plot(epochs, self.learning_rates, 'g-', linewidth=2, marker='o', markersize=3)
             ax2.set_xlabel('Epoch')
             ax2.set_ylabel('Learning Rate')
             ax2.set_title('Learning Rate Schedule')
@@ -551,18 +500,16 @@ class Trainer:
 
         plt.tight_layout()
 
-        # Save with epoch and batch information in filename
         filename = f'training_curves_epoch_{epoch:03d}_batch_{self.total_batches:05d}.png'
         plt.savefig(self.plots_dir / filename, dpi=150, bbox_inches='tight')
         plt.close()
 
     def train(self, train_dataset, val_dataset):
-        """Main training loop"""
-        # Mark training start
+        """Main training loop with comprehensive state management"""
         self.training_in_progress = True
 
-        # Data loaders
-        data_kwargs = {
+        # Setup data loaders
+        loader_kwargs = {
             'batch_size': self.args.batch_size,
             'num_workers': self.device_config['num_workers'],
             'pin_memory': self.device_config['pin_memory'],
@@ -571,14 +518,13 @@ class Trainer:
             'drop_last': True
         }
 
-        train_loader = DataLoader(train_dataset, shuffle=False, **data_kwargs)
-        val_loader = DataLoader(val_dataset, shuffle=False, **data_kwargs)
+        train_loader = DataLoader(train_dataset, shuffle=True, **loader_kwargs)
+        val_loader = DataLoader(val_dataset, shuffle=False, **loader_kwargs)
 
-        self.logger.info(f"Training set: {len(train_dataset)}, Validation set: {len(val_dataset)}")
+        self.logger.info(f"Training: {len(train_dataset)}, Validation: {len(val_dataset)}")
         self.logger.info(f"Device: {self.device}")
-        self.logger.info("⚠️  Press Ctrl+C to safely stop training and auto-save model")
+        self.logger.info("⚠️  Press Ctrl+C to safely stop training")
 
-        # Early stopping counter
         patience_counter = 0
         start_time = time.time()
 
@@ -588,7 +534,7 @@ class Trainer:
                 train_loss = self.train_epoch(epoch, train_loader)
                 val_loss = self.validate(val_loader)
 
-                # Update learning rate
+                # Update scheduler
                 self.scheduler.step(val_loss)
                 current_lr = self.optimizer.param_groups[0]['lr']
 
@@ -597,7 +543,7 @@ class Trainer:
                 self.val_losses.append(val_loss)
                 self.learning_rates.append(current_lr)
 
-                # Check for best model
+                # Check for improvement
                 is_best = val_loss < self.best_loss
                 if is_best:
                     self.best_loss = val_loss
@@ -612,35 +558,30 @@ class Trainer:
                     f"{' [BEST]' if is_best else ''}"
                 )
 
-                # Save checkpoint (will automatically plot curves)
+                # Save checkpoint
                 if epoch % self.args.save_interval == 0 or is_best:
                     self.save_checkpoint(epoch, is_best)
 
-                # Early stopping check
-                if patience_counter >= DEFAULT_CONFIG["early_stop_patience"]:
-                    self.logger.info(f"Early stopping triggered at Epoch {epoch}")
+                # Early stopping
+                if patience_counter >= CONFIG["early_stop_patience"]:
+                    self.logger.info(f"Early stopping at Epoch {epoch}")
                     break
 
         except KeyboardInterrupt:
-            self.logger.info("\n⚠️  Received keyboard interrupt signal")
-            # Saving is handled by signal handler
-
+            self.logger.info("\n⚠️  Training interrupted by user")
         except Exception as e:
-            self.logger.error(f"❌ Exception occurred during training: {e}")
-            # Save checkpoint on exception, including plots
+            self.logger.error(f"❌ Training exception: {e}")
             try:
-                exception_path = self.checkpoints_dir / f'exception_save_epoch_{self.current_epoch:03d}.pth'
+                exception_path = self.checkpoints_dir / f'exception_epoch_{self.current_epoch:03d}.pth'
                 self.save_emergency_checkpoint(exception_path)
-                self.logger.info(f"✓ Exception save completed: {exception_path}")
+                self.logger.info(f"✓ Exception save: {exception_path}")
             except Exception as save_error:
                 self.logger.error(f"❌ Exception save failed: {save_error}")
             raise
-
         finally:
-            # Mark training end
             self.training_in_progress = False
 
-        # Training completed
+        # Training completion summary
         total_time = time.time() - start_time
         self.logger.info("=" * 50)
         self.logger.info(f"Training completed! Duration: {total_time / 3600:.2f} hours")
@@ -649,14 +590,12 @@ class Trainer:
 
 
 def main():
-    # Register signal handlers
-    signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
-    signal.signal(signal.SIGTERM, signal_handler)  # Termination signal
-
-    # Register exit cleanup function
+    # Register signal handlers and cleanup
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
     atexit.register(cleanup_on_exit)
 
-    parser = argparse.ArgumentParser(description='TrackNetV2 Badminton Tracking Training')
+    parser = argparse.ArgumentParser(description='TrackNet Badminton Tracking Training')
 
     # Data parameters
     parser.add_argument('--data_dir', type=str, required=True, help='Dataset directory')
@@ -670,43 +609,39 @@ def main():
     parser.add_argument('--grad_clip', type=float, default=1.0, help='Gradient clipping')
     parser.add_argument('--save_interval', type=int, default=1, help='Save interval')
 
-    # Resume training parameter
-    parser.add_argument('--resume', type=str, help='Checkpoint path to resume training')
+    # Resume training
+    parser.add_argument('--resume', type=str, help='Checkpoint path to resume')
 
     args = parser.parse_args()
 
-    # Setup directory structure first
+    # Setup directories and device
     save_dir, checkpoints_dir, plots_dir, logs_dir = setup_directories(args.save_dir)
-
-    # Get device configuration
     device, device_config = get_device_and_config()
 
-    # Adjust batch size based on device
+    # Adjust batch size for limited memory
     if 'batch_multiplier' in device_config:
         args.batch_size = max(1, int(args.batch_size * device_config['batch_multiplier']))
-        print(f"Batch size adjusted to: {args.batch_size}")
+        print(f"Batch size adjusted: {args.batch_size}")
 
     try:
-        # Load dataset
+        # Load and split dataset
         print(f"\nLoading dataset: {args.data_dir}")
         full_dataset = load_dataset(args.data_dir)
 
-        # Split dataset
         total_size = len(full_dataset)
-        train_size = int(DEFAULT_CONFIG['train_split'] * total_size)
+        train_size = int(CONFIG['train_split'] * total_size)
         indices = torch.randperm(total_size).tolist()
 
         train_dataset = Subset(full_dataset, indices[:train_size])
         val_dataset = Subset(full_dataset, indices[train_size:])
 
-        print(f"Training set: {len(train_dataset)}, Validation set: {len(val_dataset)}")
+        print(f"Training: {len(train_dataset)}, Validation: {len(val_dataset)}")
 
-        # Setup global trainer instance (for signal handling)
+        # Initialize trainer and start training
         global _trainer_instance
         trainer = Trainer(args, device, device_config, save_dir, checkpoints_dir, plots_dir, logs_dir)
         _trainer_instance = trainer
 
-        # Start training
         trainer.train(train_dataset, val_dataset)
 
     except Exception as e:
@@ -718,9 +653,9 @@ def main():
 if __name__ == "__main__":
     main()
 
-    """
-    Usage Examples:
-    New training: python train.py --data_dir Dataset/Professional --save_dir checkpoints
-    Resume training: python train.py --data_dir Dataset/Professional --resume checkpoints/checkpoints/latest.pth
-    Full parameters: python train.py --data_dir Dataset/Professional --save_dir checkpoints --batch_size 2 --epochs 30 --lr 1.0 --weight_decay 0.0 --grad_clip 1.0 --save_interval 1
-    """
+"""
+Usage Examples:
+New training: python train.py --data_dir Dataset/Professional --save_dir checkpoints
+Resume training: python train.py --data_dir Dataset/Professional --resume checkpoints/checkpoints/latest.pth
+Custom parameters: python train.py --data_dir Dataset/Professional --batch_size 4 --epochs 50 --lr 1.0
+"""

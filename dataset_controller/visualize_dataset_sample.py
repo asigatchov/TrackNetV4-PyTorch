@@ -3,7 +3,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 import torch
-from ball_tracking_data_reader import BallTrackingDataset, CONFIG
+
+from dataset_controller.ball_tracking_data_reader import BallTrackingDataset
 
 # Locate the project root directory
 base_dir = Path(__file__).resolve().parent.parent
