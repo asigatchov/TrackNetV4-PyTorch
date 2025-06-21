@@ -178,7 +178,7 @@ def main():
         print("Using CPU")
 
     # Paths - UPDATE THESE
-    checkpoint_path = "checkpoints/checkpoints/best.pth"
+    checkpoint_path = "latest.pth"
     frame_paths = [
         "test/1.png",
         "test/2.png",

@@ -15,7 +15,7 @@ from tracknet import TrackNet, postprocess_heatmap
 # Config
 CONFIG = {
     "data_dir": "dataset/Test",
-    "checkpoint": "best.pth",
+    "checkpoint": "latest.pth",
     "batch_size": 2,
     "pixel_threshold": 4.0,
     "heatmap_threshold": 0.5,
