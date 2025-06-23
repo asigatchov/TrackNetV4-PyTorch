@@ -156,8 +156,8 @@ def reorganize_dataset(source_folder, force=False):
 
     print(message)
 
-    # 自动生成输出文件夹名：源文件夹名 + _std
-    output_folder = f"{source_folder}_std"
+    # 自动生成输出文件夹名：源文件夹名 + _reorg
+    output_folder = f"{source_folder}_reorg"
 
     # 处理已存在的目标文件夹
     if os.path.exists(output_folder):
@@ -225,7 +225,7 @@ def main():
 
     parser.add_argument("--force", "-f",
                         action="store_true",
-                        help="强制覆盖已存在的输出文件夹（自动生成为源文件夹名_std）")
+                        help="强制覆盖已存在的输出文件夹（自动生成为源文件夹名_reorg）")
 
     parser.add_argument("--check-only",
                         action="store_true",
@@ -262,11 +262,11 @@ if __name__ == "__main__":
 使用方法（视频帧保存为JPG格式）：
 
 基本用法：
-  python dataset_reorg.py --source dataset          # 处理dataset文件夹，自动输出到dataset_std
-  python dataset_reorg.py -s /path/to/data          # 处理指定路径，输出到/path/to/data_std
+  python dataset_reorg.py --source dataset          # 处理dataset文件夹，自动输出到dataset_reorg
+  python dataset_reorg.py -s /path/to/data          # 处理指定路径，输出到/path/to/data_reorg
 
 强制覆盖：
-  python dataset_reorg.py -s dataset --force        # 强制覆盖已存在的dataset_std文件夹
+  python dataset_reorg.py -s dataset --force        # 强制覆盖已存在的dataset_reorg文件夹
 
 仅检查结构：
   python dataset_reorg.py -s dataset --check-only   # 只验证文件夹结构，不执行转换
@@ -285,8 +285,8 @@ if __name__ == "__main__":
       ├── csv/
       └── video/
 
-输出结构（自动生成dataset_std）：
-  dataset_std/
+输出结构（自动生成dataset_reorg）：
+  dataset_reorg/
   ├── match1/
   │   ├── inputs/
   │   │   └── video1/
@@ -300,7 +300,7 @@ if __name__ == "__main__":
       └── labels/
 
 功能特点：
-- 自动生成输出文件夹（源文件夹名_std）
+- 自动生成输出文件夹（源文件夹名_reorg）
 - 自动过滤系统文件(.DS_Store等)
 - 实时显示处理进度
 - 视频转换为JPG帧(1.jpg开始编号，95%质量)
