@@ -87,9 +87,10 @@ def extract_frames_from_video(video_path, output_folder):
         if not ret:
             break
 
-        frame_count += 1
+        # 帧编号从0开始
         frame_filename = os.path.join(output_folder, f"{frame_count}.jpg")
         cv2.imwrite(frame_filename, frame, jpg_quality)
+        frame_count += 1
 
     cap.release()
     print(f"    ✅ {os.path.basename(video_path)} -> {frame_count} 帧")
@@ -215,7 +216,7 @@ def reorganize_dataset(source_folder, force=False):
 def main():
     """主函数 - 处理命令行参数"""
     parser = argparse.ArgumentParser(
-        description="视频数据集重组工具 - 将match文件夹结构转换为标准的inputs/labels格式，视频帧保存为JPG",
+        description="视频数据集重组工具 - 将match文件夹结构转换为标准的inputs/labels格式，视频帧保存为JPG(0.jpg开始编号)",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
 
@@ -259,7 +260,7 @@ if __name__ == "__main__":
     main()
 
 """
-使用方法（视频帧保存为JPG格式）：
+使用方法（视频帧保存为JPG格式，从0.jpg开始编号）：
 
 基本用法：
   python dataset_reorg.py --source dataset          # 处理dataset文件夹，自动输出到dataset_reorg
@@ -290,8 +291,8 @@ if __name__ == "__main__":
   ├── match1/
   │   ├── inputs/
   │   │   └── video1/
+  │   │       ├── 0.jpg
   │   │       ├── 1.jpg
-  │   │       ├── 2.jpg
   │   │       └── ...
   │   └── labels/
   │       └── video1.csv
@@ -303,7 +304,7 @@ if __name__ == "__main__":
 - 自动生成输出文件夹（源文件夹名_reorg）
 - 自动过滤系统文件(.DS_Store等)
 - 实时显示处理进度
-- 视频转换为JPG帧(1.jpg开始编号，95%质量)
+- 视频转换为JPG帧(0.jpg开始编号，95%质量)
 - CSV文件移除_ball后缀
 - 源文件夹保持不变
 """

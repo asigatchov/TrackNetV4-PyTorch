@@ -4,6 +4,12 @@
 dataset_reorg_processor.py
 数据集重组处理脚本
 将原始数据集转换为训练格式，包括图像缩放和热力图生成
+
+示例CSV格式 (video1.csv):
+Frame,Visibility,X,Y
+0,1,637.0,346.0
+1,1,639.0,346.0
+2,1,640.0,345.0
 """
 
 import argparse
@@ -109,24 +115,24 @@ def transform_coordinates(x, y, scale, offset_x, offset_y):
     return new_x, new_y
 
 
-def process_rally(input_dir, label_file, output_inputs_dir, output_heatmaps_dir, rally_name):
+def process_video(input_dir, label_file, output_inputs_dir, output_heatmaps_dir, video_name):
     """
-    处理单个rally的所有帧
+    处理单个video的所有帧
 
     Args:
         input_dir: 输入图像文件夹路径
         label_file: 标注CSV文件路径
         output_inputs_dir: 输出图像文件夹路径
         output_heatmaps_dir: 输出热力图文件夹路径
-        rally_name: rally名称
+        video_name: video名称
     """
-    print(f"    处理 {rally_name}...")
+    print(f"    处理 {video_name}...")
 
     # 创建输出目录
-    rally_inputs_dir = os.path.join(output_inputs_dir, rally_name)
-    rally_heatmaps_dir = os.path.join(output_heatmaps_dir, rally_name)
-    os.makedirs(rally_inputs_dir, exist_ok=True)
-    os.makedirs(rally_heatmaps_dir, exist_ok=True)
+    video_inputs_dir = os.path.join(output_inputs_dir, video_name)
+    video_heatmaps_dir = os.path.join(output_heatmaps_dir, video_name)
+    os.makedirs(video_inputs_dir, exist_ok=True)
+    os.makedirs(video_heatmaps_dir, exist_ok=True)
 
     # 读取标注文件
     if not os.path.exists(label_file):
@@ -149,8 +155,8 @@ def process_rally(input_dir, label_file, output_inputs_dir, output_heatmaps_dir,
         frame_num = int(os.path.splitext(os.path.basename(image_file))[0])
         image_frames.add(frame_num)
 
-    # 获取所有CSV中的帧号（Frame从0开始，转换为文件名格式1开始）
-    csv_frames = set(df['Frame'].values + 1)
+    # 获取所有CSV中的帧号（现在直接对应，无需转换）
+    csv_frames = set(df['Frame'].values)
 
     # 找出严格匹配的帧
     matched_frames = image_frames & csv_frames
@@ -169,8 +175,8 @@ def process_rally(input_dir, label_file, output_inputs_dir, output_heatmaps_dir,
             print(f"      警告: 无法读取图像 {image_file}")
             continue
 
-        # 获取对应的标注（Frame从0开始）
-        frame_data = df[df['Frame'] == frame_num - 1]
+        # 获取对应的标注（现在直接对应）
+        frame_data = df[df['Frame'] == frame_num]
         frame_row = frame_data.iloc[0]
 
         # 缩放图像
@@ -201,15 +207,15 @@ def process_rally(input_dir, label_file, output_inputs_dir, output_heatmaps_dir,
             heatmap = np.zeros((288, 512), dtype=np.uint8)
 
         # 保存文件
-        output_image_path = os.path.join(rally_inputs_dir, f"{frame_num}.jpg")
-        output_heatmap_path = os.path.join(rally_heatmaps_dir, f"{frame_num}.jpg")
+        output_image_path = os.path.join(video_inputs_dir, f"{frame_num}.jpg")
+        output_heatmap_path = os.path.join(video_heatmaps_dir, f"{frame_num}.jpg")
 
         cv2.imwrite(output_image_path, resized_image)
         cv2.imwrite(output_heatmap_path, heatmap)
 
         processed_count += 1
 
-    # 每个rally处理完就总结
+    # 每个video处理完就总结
     print(f"      完成处理 {processed_count} 帧", end="")
 
     # 报告不匹配的情况
@@ -259,22 +265,22 @@ def process_match(match_dir, output_dir):
         print(f"    警告: labels目录不存在 {labels_dir}")
         return
 
-    # 获取所有rally文件夹
-    rally_dirs = [d for d in os.listdir(inputs_dir)
+    # 获取所有video文件夹
+    video_dirs = [d for d in os.listdir(inputs_dir)
                   if os.path.isdir(os.path.join(inputs_dir, d))]
-    rally_dirs.sort()
+    video_dirs.sort()
 
-    for rally_name in rally_dirs:
-        rally_input_dir = os.path.join(inputs_dir, rally_name)
-        rally_label_file = os.path.join(labels_dir, f"{rally_name}.csv")
+    for video_name in video_dirs:
+        video_input_dir = os.path.join(inputs_dir, video_name)
+        video_label_file = os.path.join(labels_dir, f"{video_name}.csv")
 
-        process_rally(rally_input_dir, rally_label_file,
-                      output_inputs_dir, output_heatmaps_dir, rally_name)
+        process_video(video_input_dir, video_label_file,
+                      output_inputs_dir, output_heatmaps_dir, video_name)
 
 
 def main():
     parser = argparse.ArgumentParser(description='处理数据集生成训练数据')
-    parser.add_argument('dataset_path', type=str, help='dataset_std文件夹的路径')
+    parser.add_argument('dataset_path', type=str, help='dataset_reorg文件夹的路径')
     parser.add_argument('--output_dir', type=str, default=None,
                         help='输出目录路径（默认为dataset_path的父目录）')
 
@@ -290,7 +296,7 @@ def main():
     if args.output_dir:
         output_dir = args.output_dir
     else:
-        # 从dataset_std得到dataset_std_train
+        # 从dataset_reorg得到dataset_reorg_train
         dataset_name = os.path.basename(dataset_path.rstrip('/'))
         parent_dir = os.path.dirname(dataset_path)
         output_dir = os.path.join(parent_dir, f"{dataset_name}_train")
@@ -328,18 +334,18 @@ if __name__ == "__main__":
 
 """
 用法示例:
-    python dataset_reorg_processor.py /path/to/dataset_std
-    python dataset_reorg_processor.py /path/to/dataset_std --output_dir /output/path
+    python dataset_reorg_processor.py /path/to/dataset_reorg
+    python dataset_reorg_processor.py /path/to/dataset_reorg --output_dir /output/path
 
 依赖安装:
     pip install opencv-python pandas numpy scipy
 
 输出结构:
-    dataset_std_train/
+    dataset_reorg_train/
     ├── match1/
-    │   ├── inputs/rally1/1.jpg (512×288)
-    │   └── heatmaps/rally1/1.jpg (热力图)
+    │   ├── inputs/video1/0.jpg (512×288)
+    │   └── heatmaps/video1/0.jpg (热力图)
     └── match2/
-        ├── inputs/rally2/...
-        └── heatmaps/rally2/...
+        ├── inputs/video2/...
+        └── heatmaps/video2/...
 """
