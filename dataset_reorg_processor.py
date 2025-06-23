@@ -3,13 +3,36 @@
 """
 dataset_reorg_processor.py
 数据集重组处理脚本
-将原始数据集转换为训练格式，包括图像缩放和热力图生成
+
+功能说明:
+1. 自动遍历dataset_reorg文件夹中的所有match
+2. 将原始图像按比例缩放到512×288分辨率（保持宽高比，不拉伸）
+3. 根据缩放比例转换CSV标注坐标
+4. 为每帧生成对应的热力图：
+   - Visibility=1: 生成以标注点为中心的高斯分布热力图（σ=3像素）
+   - Visibility=0: 生成全零热力图
+5. 创建训练数据集，包含inputs（缩放图像）和heatmaps（热力图）两个文件夹
+6. 严格匹配：只处理同时存在图像文件和CSV记录的帧
+
+输入结构:
+dataset_reorg/
+├── match1/
+│   ├── inputs/video1/0.jpg,1.jpg...
+│   └── labels/video1.csv
+└── match2/...
+
+输出结构:
+dataset_reorg_train/
+├── match1/
+│   ├── inputs/video1/0.jpg,1.jpg... (512×288)
+│   └── heatmaps/video1/0.jpg,1.jpg... (热力图)
+└── match2/...
 
 示例CSV格式 (video1.csv):
 Frame,Visibility,X,Y
 0,1,637.0,346.0
 1,1,639.0,346.0
-2,1,640.0,345.0
+2,0,640.0,345.0  # Visibility=0生成全零热力图
 """
 
 import argparse

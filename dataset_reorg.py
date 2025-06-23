@@ -1,3 +1,49 @@
+"""
+羽毛球视频数据集重组工具 (dataset_reorg.py)
+
+功能：
+    将包含match文件夹的原始羽毛球视频数据集重新组织为标准的机器学习训练格式。
+    自动提取视频帧，重命名CSV标注文件，生成适合深度学习模型训练的数据结构。
+
+输入结构：
+    dataset/
+    ├── match1/
+    │   ├── csv/
+    │   │   └── rally1_ball.csv
+    │   └── video/
+    │       └── rally1.mp4
+    └── match2/...
+
+输出结构：
+    dataset_reorg/
+    ├── match1/
+    │   ├── inputs/
+    │   │   └── rally1/
+    │   │       ├── 0.jpg
+    │   │       ├── 1.jpg
+    │   │       └── ...
+    │   └── labels/
+    │       └── rally1.csv
+    └── match2/...
+
+主要特性：
+    - 视频帧提取：MP4 → JPG序列（0.jpg开始编号）
+    - 标注文件处理：移除_ball后缀
+    - 智能过滤：自动忽略系统文件(.DS_Store等)
+    - 进度显示：实时处理状态反馈
+    - 质量优化：JPG高质量压缩(95%)
+    - 安全操作：保持原始数据不变
+
+适用场景：
+    - 羽毛球追踪算法训练
+    - 球类运动计算机视觉研究
+    - 体育分析深度学习项目
+
+作者：Claude AI Assistant
+版本：1.0
+更新：2025-06-23
+"""
+
 import os
 import shutil
 import cv2
