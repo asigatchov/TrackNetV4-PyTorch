@@ -143,11 +143,25 @@ def process_rally(input_dir, label_file, output_inputs_dir, output_heatmaps_dir,
     image_files = glob.glob(os.path.join(input_dir, "*.jpg"))
     image_files.sort(key=lambda x: int(os.path.splitext(os.path.basename(x))[0]))
 
-    processed_count = 0
-    skipped_frames = []
-
+    # 获取所有图像帧号
+    image_frames = set()
     for image_file in image_files:
         frame_num = int(os.path.splitext(os.path.basename(image_file))[0])
+        image_frames.add(frame_num)
+
+    # 获取所有CSV中的帧号（Frame从0开始，转换为文件名格式1开始）
+    csv_frames = set(df['Frame'].values + 1)
+
+    # 找出严格匹配的帧
+    matched_frames = image_frames & csv_frames
+    only_image_frames = image_frames - csv_frames  # 有图像无标注
+    only_csv_frames = csv_frames - image_frames  # 有标注无图像
+
+    processed_count = 0
+
+    # 只处理匹配的帧
+    for frame_num in sorted(matched_frames):
+        image_file = os.path.join(input_dir, f"{frame_num}.jpg")
 
         # 读取图像
         image = cv2.imread(image_file)
@@ -155,12 +169,8 @@ def process_rally(input_dir, label_file, output_inputs_dir, output_heatmaps_dir,
             print(f"      警告: 无法读取图像 {image_file}")
             continue
 
-        # 查找对应的标注
-        frame_data = df[df['Frame'] == frame_num - 1]  # Frame从0开始，文件名从1开始
-        if frame_data.empty:
-            skipped_frames.append(frame_num)
-            continue
-
+        # 获取对应的标注（Frame从0开始）
+        frame_data = df[df['Frame'] == frame_num - 1]
         frame_row = frame_data.iloc[0]
 
         # 缩放图像
@@ -199,10 +209,21 @@ def process_rally(input_dir, label_file, output_inputs_dir, output_heatmaps_dir,
 
         processed_count += 1
 
-    # 输出处理结果总结
+    # 每个rally处理完就总结
     print(f"      完成处理 {processed_count} 帧", end="")
-    if skipped_frames:
-        print(f"，跳过 {len(skipped_frames)} 帧无匹配标注")
+
+    # 报告不匹配的情况
+    issues = []
+    if only_image_frames:
+        frames_str = ",".join(map(str, sorted(only_image_frames)))
+        issues.append(f"图像文件无对应CSV记录: {frames_str}")
+
+    if only_csv_frames:
+        frames_str = ",".join(map(str, sorted(only_csv_frames)))
+        issues.append(f"CSV记录无对应图像文件: {frames_str}")
+
+    if issues:
+        print(f"，跳过 {'; '.join(issues)}")
     else:
         print()
 
