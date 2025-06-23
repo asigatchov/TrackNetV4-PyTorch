@@ -146,7 +146,7 @@ class FrameHeatmapDataset(Dataset):
 
 if __name__ == "__main__":
     # 使用示例
-    root_dir = "dataset_reorg_train"
+    root_dir = "../dataset/Test_reorg_train"
 
     # 1. 基础使用
     dataset = FrameHeatmapDataset(root_dir)
