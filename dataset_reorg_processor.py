@@ -43,14 +43,13 @@ Frame,Visibility,X,Y
 """
 
 import argparse
-import os
 import glob
+import os
+
 import cv2
-import pandas as pd
 import numpy as np
+import pandas as pd
 from scipy.stats import multivariate_normal
-import shutil
-from pathlib import Path
 
 
 def create_gaussian_heatmap(center_x, center_y, width=512, height=288, sigma=3):

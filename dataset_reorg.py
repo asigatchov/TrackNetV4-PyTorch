@@ -50,13 +50,13 @@ pip install opencv-python
     - 安全操作：保持原始数据不变
 """
 
+import argparse
 import os
 import shutil
-import cv2
-import glob
-import argparse
 import sys
 from pathlib import Path
+
+import cv2
 
 # 定义需要过滤的无效文件和文件夹
 INVALID_FILES = {'.DS_Store', 'Thumbs.db', '.gitignore', '.gitkeep'}
