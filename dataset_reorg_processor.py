@@ -17,7 +17,7 @@ import shutil
 from pathlib import Path
 
 
-def create_gaussian_heatmap(center_x, center_y, width=512, height=288, sigma=4):
+def create_gaussian_heatmap(center_x, center_y, width=512, height=288, sigma=3):
     """
     生成以指定坐标为中心的2D高斯热力图
 
@@ -26,7 +26,7 @@ def create_gaussian_heatmap(center_x, center_y, width=512, height=288, sigma=4):
         center_y: 中心点y坐标
         width: 热力图宽度
         height: 热力图高度
-        sigma: 高斯分布的标准差 (默认4像素)
+        sigma: 高斯分布的标准差
 
     Returns:
         numpy.ndarray: 归一化的热力图 (0-255)
@@ -144,6 +144,8 @@ def process_rally(input_dir, label_file, output_inputs_dir, output_heatmaps_dir,
     image_files.sort(key=lambda x: int(os.path.splitext(os.path.basename(x))[0]))
 
     processed_count = 0
+    skipped_frames = []
+
     for image_file in image_files:
         frame_num = int(os.path.splitext(os.path.basename(image_file))[0])
 
@@ -156,7 +158,7 @@ def process_rally(input_dir, label_file, output_inputs_dir, output_heatmaps_dir,
         # 查找对应的标注
         frame_data = df[df['Frame'] == frame_num - 1]  # Frame从0开始，文件名从1开始
         if frame_data.empty:
-            print(f"      警告: 帧 {frame_num} 没有对应的标注，跳过")
+            skipped_frames.append(frame_num)
             continue
 
         frame_row = frame_data.iloc[0]
@@ -197,7 +199,12 @@ def process_rally(input_dir, label_file, output_inputs_dir, output_heatmaps_dir,
 
         processed_count += 1
 
-    print(f"      完成处理 {processed_count} 帧")
+    # 输出处理结果总结
+    print(f"      完成处理 {processed_count} 帧", end="")
+    if skipped_frames:
+        print(f"，跳过 {len(skipped_frames)} 帧无匹配标注")
+    else:
+        print()
 
 
 def process_match(match_dir, output_dir):
