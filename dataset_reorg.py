@@ -5,6 +5,21 @@
     将包含match文件夹的原始羽毛球视频数据集重新组织为标准的机器学习训练格式。
     自动提取视频帧，重命名CSV标注文件，生成适合深度学习模型训练的数据结构。
 
+使用方法（视频帧保存为JPG格式，从0.jpg开始编号）：
+
+基本用法：
+python dataset_reorg.py --source dataset          # 处理dataset文件夹，自动输出到dataset_reorg
+python dataset_reorg.py -s /path/to/data          # 处理指定路径，输出到/path/to/data_reorg
+
+强制覆盖：
+python dataset_reorg.py -s dataset --force        # 强制覆盖已存在的dataset_reorg文件夹
+
+仅检查结构：
+python dataset_reorg.py -s dataset --check-only   # 只验证文件夹结构，不执行转换
+
+安装依赖：
+pip install opencv-python
+
 输入结构：
     dataset/
     ├── match1/
@@ -33,15 +48,6 @@
     - 进度显示：实时处理状态反馈
     - 质量优化：JPG高质量压缩(95%)
     - 安全操作：保持原始数据不变
-
-适用场景：
-    - 羽毛球追踪算法训练
-    - 球类运动计算机视觉研究
-    - 体育分析深度学习项目
-
-作者：Claude AI Assistant
-版本：1.0
-更新：2025-06-23
 """
 
 import os
@@ -304,53 +310,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-"""
-使用方法（视频帧保存为JPG格式，从0.jpg开始编号）：
-
-基本用法：
-  python dataset_reorg.py --source dataset          # 处理dataset文件夹，自动输出到dataset_reorg
-  python dataset_reorg.py -s /path/to/data          # 处理指定路径，输出到/path/to/data_reorg
-
-强制覆盖：
-  python dataset_reorg.py -s dataset --force        # 强制覆盖已存在的dataset_reorg文件夹
-
-仅检查结构：
-  python dataset_reorg.py -s dataset --check-only   # 只验证文件夹结构，不执行转换
-
-安装依赖：
-  pip install opencv-python
-
-输入结构：
-  dataset/
-  ├── match1/
-  │   ├── csv/
-  │   │   └── video1_ball.csv
-  │   └── video/
-  │       └── video1.mp4
-  └── match2/
-      ├── csv/
-      └── video/
-
-输出结构（自动生成dataset_reorg）：
-  dataset_reorg/
-  ├── match1/
-  │   ├── inputs/
-  │   │   └── video1/
-  │   │       ├── 0.jpg
-  │   │       ├── 1.jpg
-  │   │       └── ...
-  │   └── labels/
-  │       └── video1.csv
-  └── match2/
-      ├── inputs/
-      └── labels/
-
-功能特点：
-- 自动生成输出文件夹（源文件夹名_reorg）
-- 自动过滤系统文件(.DS_Store等)
-- 实时显示处理进度
-- 视频转换为JPG帧(0.jpg开始编号，95%质量)
-- CSV文件移除_ball后缀
-- 源文件夹保持不变
-"""

@@ -4,6 +4,13 @@
 dataset_reorg_processor.py
 数据集重组处理脚本
 
+用法示例:
+    python dataset_reorg_processor.py /path/to/dataset_reorg
+    python dataset_reorg_processor.py /path/to/dataset_reorg --output_dir /output/path
+
+依赖安装:
+    pip install opencv-python pandas numpy scipy
+
 功能说明:
 1. 自动遍历dataset_reorg文件夹中的所有match
 2. 将原始图像按比例缩放到512×288分辨率（保持宽高比，不拉伸）
@@ -354,21 +361,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-"""
-用法示例:
-    python dataset_reorg_processor.py /path/to/dataset_reorg
-    python dataset_reorg_processor.py /path/to/dataset_reorg --output_dir /output/path
-
-依赖安装:
-    pip install opencv-python pandas numpy scipy
-
-输出结构:
-    dataset_reorg_train/
-    ├── match1/
-    │   ├── inputs/video1/0.jpg (512×288)
-    │   └── heatmaps/video1/0.jpg (热力图)
-    └── match2/
-        ├── inputs/video2/...
-        └── heatmaps/video2/...
-"""
