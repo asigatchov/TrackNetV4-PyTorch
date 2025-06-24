@@ -1,9 +1,43 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-TrackNet 训练脚本 - 优化版
+TrackNet Training Script - Optimized Version with Argument Support
+
+This script trains a TrackNet model for badminton tracking using PyTorch.
+The script supports custom configurations through command-line arguments and
+includes comprehensive logging, checkpointing, and visualization features.
+
+Usage Examples:
+1. Basic training with default settings:
+   python train_tracknet.py --dataset_dir dataset/Professional_reorg_train
+
+2. Custom training with specific parameters:
+   python train_tracknet.py --dataset_dir dataset/Professional_reorg_train --batch_size 8 --num_epochs 50 --lr 2.0 --device cuda
+
+3. Advanced training with all custom settings:
+   python train_tracknet.py --dataset_dir dataset/Professional_reorg_train --batch_size 4 --num_epochs 100 --lr 1.5 --train_ratio 0.9 --save_dir outputs --experiment_name advanced_experiment --plot_interval 5 --patience 5
+
+Parameter Functions:
+- dataset_dir: Path to training dataset directory (required)
+- train_ratio: Proportion of data for training (default: 0.8)
+- random_seed: Random seed for data splitting (default: 26)
+- batch_size: Number of samples per training batch (default: 3)
+- num_epochs: Total training epochs (default: 30)
+- num_workers: Number of data loading workers (default: 0)
+- device: Computing device - auto/cpu/cuda/mps (default: auto)
+- optimizer: Optimizer type - Adadelta/Adam/SGD (default: Adadelta)
+- lr: Initial learning rate for optimizer (default: 1.0)
+- weight_decay: Weight decay for optimizer (default: 0)
+- scheduler: Learning rate scheduler type (default: ReduceLROnPlateau)
+- factor: Factor by which LR is reduced (default: 0.5)
+- patience: Epochs to wait before reducing LR (default: 3)
+- min_lr: Minimum learning rate (default: 1e-6)
+- plot_interval: Interval for recording batch losses (default: 10)
+- save_dir: Directory to save training outputs (default: training_outputs)
+- experiment_name: Name prefix for experiment files (default: tracknet_experiment)
 """
 
+import argparse
 import json
 import logging
 import signal
@@ -21,111 +55,132 @@ from tqdm import tqdm
 from TrackNet import TrackNet
 from dataset_preprocess.dataset_frame_heatmap import FrameHeatmapDataset
 
-# ================== 配置 ==================
-CONFIG = {
-    # 数据集配置
-    "dataset": {
-        "root_dir": "dataset/Professional_reorg_train",
-        "train_ratio": 0.8,
-        "random_seed": 26
-    },
 
-    # 训练配置
-    "training": {
-        "batch_size": 3,
-        "num_epochs": 30,
-        "num_workers": 0,
-        "device": "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
-    },
+def parse_arguments():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(
+        description="TrackNet Training Script",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s --dataset_dir dataset/train
+  %(prog)s --dataset_dir dataset/train --batch_size 8 --num_epochs 50
+  %(prog)s --dataset_dir dataset/train --batch_size 4 --lr 2.0 --device cuda
+        """
+    )
 
-    # 优化器配置
-    "optimizer": {
-        "type": "Adadelta",
-        "lr": 1.0,
-        "weight_decay": 0
-    },
+    # Dataset arguments
+    parser.add_argument('--dataset_dir', type=str, required=True,
+                        help='Path to the training dataset directory')
+    parser.add_argument('--train_ratio', type=float, default=0.8,
+                        help='Ratio of training data (default: 0.8)')
+    parser.add_argument('--random_seed', type=int, default=26,
+                        help='Random seed for data splitting (default: 26)')
 
-    # 学习率调度器配置
-    "lr_scheduler": {
-        "type": "ReduceLROnPlateau",
-        "mode": "min",
-        "factor": 0.5,
-        "patience": 3,
-        "min_lr": 1e-6
-    },
+    # Training arguments
+    parser.add_argument('--batch_size', type=int, default=3,
+                        help='Batch size for training (default: 3)')
+    parser.add_argument('--num_epochs', type=int, default=30,
+                        help='Number of training epochs (default: 30)')
+    parser.add_argument('--num_workers', type=int, default=0,
+                        help='Number of data loading workers (default: 0)')
+    parser.add_argument('--device', type=str, default='auto',
+                        help='Device to use: auto/cpu/cuda/mps (default: auto)')
 
-    # 日志和保存配置
-    "logging": {
-        "plot_interval_batches": 10,  # 每x个batch记录一次用于绘图
-        "save_dir": "training_outputs",
-        "experiment_name": "tracknet_experiment"
-    }
-}
+    # Optimizer arguments
+    parser.add_argument('--optimizer', type=str, default='Adadelta',
+                        choices=['Adadelta', 'Adam', 'SGD'],
+                        help='Optimizer type (default: Adadelta)')
+    parser.add_argument('--lr', type=float, default=1.0,
+                        help='Learning rate (default: 1.0)')
+    parser.add_argument('--weight_decay', type=float, default=0,
+                        help='Weight decay for optimizer (default: 0)')
+
+    # Learning rate scheduler arguments
+    parser.add_argument('--scheduler', type=str, default='ReduceLROnPlateau',
+                        choices=['ReduceLROnPlateau', 'None'],
+                        help='Learning rate scheduler type (default: ReduceLROnPlateau)')
+    parser.add_argument('--factor', type=float, default=0.5,
+                        help='Factor by which LR is reduced (default: 0.5)')
+    parser.add_argument('--patience', type=int, default=3,
+                        help='Epochs to wait before reducing LR (default: 3)')
+    parser.add_argument('--min_lr', type=float, default=1e-6,
+                        help='Minimum learning rate (default: 1e-6)')
+
+    # Logging and saving arguments
+    parser.add_argument('--plot_interval', type=int, default=10,
+                        help='Interval for recording batch losses (default: 10)')
+    parser.add_argument('--save_dir', type=str, default='training_outputs',
+                        help='Directory to save outputs (default: training_outputs)')
+    parser.add_argument('--experiment_name', type=str, default='tracknet_experiment',
+                        help='Name for this experiment (default: tracknet_experiment)')
+
+    return parser.parse_args()
 
 
 class WeightedBinaryCrossEntropy(nn.Module):
     """
-    论文中定义的加权二元交叉熵损失函数
+    Weighted Binary Cross Entropy Loss as defined in the paper
     WBCE = -Σ[(1-w)² * ŷ * log(y) + w² * (1-ŷ) * log(1-y)]
-    其中 w = y (预测值本身作为权重)
+    where w = y (prediction value as weight)
     """
 
     def __init__(self, epsilon=1e-7):
         super(WeightedBinaryCrossEntropy, self).__init__()
-        self.epsilon = epsilon  # 防止log(0)
+        self.epsilon = epsilon  # Prevent log(0)
 
     def forward(self, y_pred, y_true):
         """
         Args:
-            y_pred: 模型预测 [B, 3, H, W]，值域[0,1]
-            y_true: 真实标签 [B, 3, H, W]，值域{0,1}
+            y_pred: Model predictions [B, 3, H, W], range [0,1]
+            y_true: Ground truth labels [B, 3, H, W], range {0,1}
         Returns:
-            loss: 标量损失值
+            loss: Scalar loss value
         """
-        # 确保预测值在有效范围内，避免log(0)
+        # Clamp predictions to valid range, avoid log(0)
         y_pred = torch.clamp(y_pred, self.epsilon, 1 - self.epsilon)
 
-        # w = y (论文定义：权重等于预测值)
+        # w = y (paper definition: weight equals prediction)
         w = y_pred
 
-        # 计算加权二元交叉熵
+        # Calculate weighted binary cross entropy
         # WBCE = -Σ[(1-w)² * ŷ * log(y) + w² * (1-ŷ) * log(1-y)]
         term1 = (1 - w) ** 2 * y_true * torch.log(y_pred)
         term2 = w ** 2 * (1 - y_true) * torch.log(1 - y_pred)
 
-        # 负号在前，求和
+        # Negative sign and sum
         wbce = -(term1 + term2)
 
-        # 返回批次平均损失
+        # Return batch average loss
         return wbce.mean()
 
 
 class TrainingMonitor:
-    """训练监控器"""
+    """Training monitor for logging and visualization"""
 
-    def __init__(self, config, save_dir):
-        self.config = config
+    def __init__(self, args, save_dir):
+        self.args = args
         self.save_dir = save_dir
 
-        # 训练历史记录
-        self.batch_losses = []  # 批次损失
-        self.batch_steps = []  # 批次步数
-        self.batch_lrs = []  # 批次学习率
+        # Training history
+        self.batch_losses = []  # Batch losses
+        self.batch_steps = []  # Batch steps
+        self.batch_lrs = []  # Batch learning rates
 
-        self.epoch_train_losses = []  # epoch训练损失
-        self.epoch_val_losses = []  # epoch验证损失
-        self.epoch_steps = []  # epoch对应的批次步数
+        self.epoch_train_losses = []  # Epoch training losses
+        self.epoch_val_losses = []  # Epoch validation losses
+        self.epoch_steps = []  # Epoch corresponding batch steps
 
         self.current_batch = 0
 
-        # 设置日志
+        # Setup logging
         self.setup_logger()
 
     def setup_logger(self):
-        """设置日志记录器"""
+        """Setup logging configuration"""
         log_file = self.save_dir / "training.log"
 
-        # 配置日志格式，移除控制台输出以减少啰嗦
+        # Configure logging format, remove console output to reduce verbosity
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s - %(message)s',
@@ -134,32 +189,32 @@ class TrainingMonitor:
         self.logger = logging.getLogger(__name__)
 
     def update_batch_loss(self, loss, lr):
-        """更新批次损失（用于绘图）"""
+        """Update batch loss for plotting"""
         self.current_batch += 1
 
-        # 按照配置的间隔记录
-        if self.current_batch % self.config["logging"]["plot_interval_batches"] == 0:
+        # Record according to configured interval
+        if self.current_batch % self.args.plot_interval == 0:
             self.batch_losses.append(loss)
             self.batch_steps.append(self.current_batch)
             self.batch_lrs.append(lr)
 
     def update_epoch_loss(self, train_loss, val_loss):
-        """更新epoch损失"""
+        """Update epoch losses"""
         self.epoch_train_losses.append(train_loss)
         self.epoch_val_losses.append(val_loss)
         self.epoch_steps.append(self.current_batch)
 
     def plot_training_curves(self, save_path):
-        """绘制训练曲线（英文标签）"""
+        """Plot training curves with English labels"""
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
 
-        # 损失曲线
-        # 绘制批次损失
+        # Loss curves
+        # Plot batch losses
         if self.batch_losses:
             ax1.plot(self.batch_steps, self.batch_losses, 'b-', alpha=0.3,
-                     label=f'Batch Loss (every {self.config["logging"]["plot_interval_batches"]} batches)')
+                     label=f'Batch Loss (every {self.args.plot_interval} batches)')
 
-        # 绘制epoch损失
+        # Plot epoch losses
         if self.epoch_train_losses:
             ax1.plot(self.epoch_steps, self.epoch_train_losses, 'bo-',
                      markersize=8, linewidth=2, label='Epoch Train Loss')
@@ -173,10 +228,10 @@ class TrainingMonitor:
         ax1.legend()
         ax1.grid(True, alpha=0.3)
 
-        # 学习率曲线
+        # Learning rate curve
         if self.batch_lrs:
             ax2.plot(self.batch_steps, self.batch_lrs, 'g-', linewidth=2)
-            ax2.set_xlabel(f'Batch Number (every {self.config["logging"]["plot_interval_batches"]} batches)')
+            ax2.set_xlabel(f'Batch Number (every {self.args.plot_interval} batches)')
             ax2.set_ylabel('Learning Rate')
             ax2.set_title('Learning Rate Schedule')
             ax2.grid(True, alpha=0.3)
@@ -188,14 +243,14 @@ class TrainingMonitor:
 
 
 class ModelCheckpoint:
-    """模型检查点管理器"""
+    """Model checkpoint manager"""
 
     def __init__(self, save_dir):
         self.save_dir = save_dir
         self.best_loss = float('inf')
 
     def save_checkpoint(self, model, optimizer, scheduler, epoch, metrics):
-        """保存检查点"""
+        """Save checkpoint"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
         checkpoint = {
@@ -207,12 +262,12 @@ class ModelCheckpoint:
             'timestamp': timestamp
         }
 
-        # 每个epoch都保存
+        # Save every epoch
         filename = f"checkpoint_epoch_{epoch + 1}_{timestamp}.pth"
         filepath = self.save_dir / filename
         torch.save(checkpoint, filepath)
 
-        # 如果是最佳模型，覆盖保存best_model.pth
+        # If best model, save as best_model.pth
         if metrics['val_loss'] < self.best_loss:
             self.best_loss = metrics['val_loss']
             best_path = self.save_dir / "best_model.pth"
@@ -223,117 +278,139 @@ class ModelCheckpoint:
 
 
 class Trainer:
-    """主训练器类"""
+    """Main trainer class"""
 
-    def __init__(self, config):
-        self.config = config
-        self.device = torch.device(config["training"]["device"])
+    def __init__(self, args):
+        self.args = args
 
-        # 创建保存目录
+        # Setup device
+        if args.device == 'auto':
+            if torch.backends.mps.is_available():
+                self.device = torch.device('mps')
+            elif torch.cuda.is_available():
+                self.device = torch.device('cuda')
+            else:
+                self.device = torch.device('cpu')
+        else:
+            self.device = torch.device(args.device)
+
+        # Create save directories
         self.setup_directories()
 
-        # 初始化组件
-        self.monitor = TrainingMonitor(config, self.save_dir)
+        # Initialize components
+        self.monitor = TrainingMonitor(args, self.save_dir)
         self.checkpoint = ModelCheckpoint(self.save_dir / "checkpoints")
 
-        # 设置中断处理
+        # Setup interrupt handling
         self.emergency_save = False
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
 
     def signal_handler(self, signum, frame):
-        """中断信号处理"""
-        print("\n检测到中断信号，正在紧急保存...")
+        """Handle interrupt signals"""
+        print("\nInterrupt signal detected, emergency saving...")
         self.emergency_save = True
 
     def setup_directories(self):
-        """设置目录结构"""
+        """Setup directory structure"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        experiment_name = f"{self.config['logging']['experiment_name']}_{timestamp}"
+        experiment_name = f"{self.args.experiment_name}_{timestamp}"
 
-        self.save_dir = Path(self.config["logging"]["save_dir"]) / experiment_name
+        self.save_dir = Path(self.args.save_dir) / experiment_name
         self.save_dir.mkdir(parents=True, exist_ok=True)
 
-        # 创建子目录
+        # Create subdirectories
         (self.save_dir / "checkpoints").mkdir(exist_ok=True)
         (self.save_dir / "plots").mkdir(exist_ok=True)
         (self.save_dir / "configs").mkdir(exist_ok=True)
 
-        # 保存配置
+        # Save configuration
         config_path = self.save_dir / "configs" / "training_config.json"
         with open(config_path, 'w', encoding='utf-8') as f:
-            json.dump(self.config, f, indent=4, ensure_ascii=False)
+            json.dump(vars(self.args), f, indent=4, ensure_ascii=False)
 
     def prepare_data(self):
-        """准备数据集和数据加载器"""
-        print("正在加载数据集...")
+        """Prepare dataset and data loaders"""
+        print("Loading dataset...")
 
-        # 加载数据集
-        dataset = FrameHeatmapDataset(self.config["dataset"]["root_dir"])
-        print(f"数据集大小: {len(dataset)}")
+        # Load dataset
+        dataset = FrameHeatmapDataset(self.args.dataset_dir)
+        print(f"Dataset size: {len(dataset)}")
 
-        # 设置随机种子
-        torch.manual_seed(self.config["dataset"]["random_seed"])
+        # Set random seed
+        torch.manual_seed(self.args.random_seed)
 
-        # 分割数据集
-        train_size = int(self.config["dataset"]["train_ratio"] * len(dataset))
+        # Split dataset
+        train_size = int(self.args.train_ratio * len(dataset))
         val_size = len(dataset) - train_size
 
         train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 
-        # 创建数据加载器
+        # Create data loaders
         self.train_loader = DataLoader(
             train_dataset,
-            batch_size=self.config["training"]["batch_size"],
+            batch_size=self.args.batch_size,
             shuffle=True,
-            num_workers=self.config["training"]["num_workers"],
+            num_workers=self.args.num_workers,
             pin_memory=True if self.device.type == 'cuda' else False
         )
 
         self.val_loader = DataLoader(
             val_dataset,
-            batch_size=self.config["training"]["batch_size"],
+            batch_size=self.args.batch_size,
             shuffle=False,
-            num_workers=self.config["training"]["num_workers"],
+            num_workers=self.args.num_workers,
             pin_memory=True if self.device.type == 'cuda' else False
         )
 
-        print(f"训练集大小: {len(train_dataset)}")
-        print(f"验证集大小: {len(val_dataset)}")
+        print(f"Training set size: {len(train_dataset)}")
+        print(f"Validation set size: {len(val_dataset)}")
 
     def prepare_model(self):
-        """准备模型、损失函数和优化器"""
-        # 创建模型
+        """Prepare model, loss function and optimizer"""
+        # Create model
         self.model = TrackNet().to(self.device)
         self.criterion = WeightedBinaryCrossEntropy()
 
-        # 打印模型信息
+        # Print model info
         total_params = sum(p.numel() for p in self.model.parameters())
-        print(f"模型参数量: {total_params:,}")
+        print(f"Model parameters: {total_params:,}")
 
-        # 创建优化器
-        if self.config["optimizer"]["type"] == "Adadelta":
+        # Create optimizer
+        if self.args.optimizer == "Adadelta":
             self.optimizer = torch.optim.Adadelta(
                 self.model.parameters(),
-                lr=self.config["optimizer"]["lr"],
-                weight_decay=self.config["optimizer"]["weight_decay"]
+                lr=self.args.lr,
+                weight_decay=self.args.weight_decay
+            )
+        elif self.args.optimizer == "Adam":
+            self.optimizer = torch.optim.Adam(
+                self.model.parameters(),
+                lr=self.args.lr,
+                weight_decay=self.args.weight_decay
+            )
+        elif self.args.optimizer == "SGD":
+            self.optimizer = torch.optim.SGD(
+                self.model.parameters(),
+                lr=self.args.lr,
+                weight_decay=self.args.weight_decay,
+                momentum=0.9
             )
 
-        # 创建学习率调度器
-        if self.config["lr_scheduler"]["type"] == "ReduceLROnPlateau":
+        # Create learning rate scheduler
+        if self.args.scheduler == "ReduceLROnPlateau":
             self.scheduler = ReduceLROnPlateau(
                 self.optimizer,
-                mode=self.config["lr_scheduler"]["mode"],
-                factor=self.config["lr_scheduler"]["factor"],
-                patience=self.config["lr_scheduler"]["patience"],
-                min_lr=self.config["lr_scheduler"]["min_lr"]
-                # 移除了 verbose=False，因为 ReduceLROnPlateau 没有这个参数
+                mode='min',
+                factor=self.args.factor,
+                patience=self.args.patience,
+                min_lr=self.args.min_lr
             )
         else:
             self.scheduler = None
 
     def train_epoch(self):
-        """训练一个epoch"""
+        """Train one epoch"""
         self.model.train()
         total_loss = 0.0
         batch_count = 0
@@ -345,21 +422,21 @@ class Trainer:
             inputs = inputs.to(self.device)
             targets = targets.to(self.device)
 
-            # 前向传播
+            # Forward pass
             self.optimizer.zero_grad()
             outputs = self.model(inputs)
             loss = self.criterion(outputs, targets)
 
-            # 反向传播
+            # Backward pass
             loss.backward()
             self.optimizer.step()
 
-            # 记录损失
+            # Record loss
             batch_loss = loss.item()
             total_loss += batch_loss
             batch_count += 1
 
-            # 更新批次损失（用于绘图）
+            # Update batch loss for plotting
             current_lr = self.optimizer.param_groups[0]['lr']
             self.monitor.update_batch_loss(batch_loss, current_lr)
 
@@ -367,7 +444,7 @@ class Trainer:
         return avg_loss
 
     def validate(self):
-        """验证模型"""
+        """Validate model"""
         self.model.eval()
         total_loss = 0.0
         batch_count = 0
@@ -390,12 +467,12 @@ class Trainer:
         return avg_loss
 
     def emergency_checkpoint(self, epoch, train_loss, val_loss):
-        """紧急保存检查点"""
-        # 创建紧急保存目录
+        """Emergency save checkpoint"""
+        # Create emergency save directory
         emergency_dir = Path("emergency_saves") / datetime.now().strftime("%Y%m%d_%H%M%S")
         emergency_dir.mkdir(parents=True, exist_ok=True)
 
-        # 保存模型
+        # Save model
         checkpoint_path = emergency_dir / f"emergency_checkpoint_epoch_{epoch + 1}.pth"
         torch.save({
             'epoch': epoch,
@@ -406,39 +483,39 @@ class Trainer:
             'val_loss': val_loss
         }, checkpoint_path)
 
-        # 保存训练曲线
+        # Save training curves
         plot_path = emergency_dir / "training_curves.png"
         self.monitor.plot_training_curves(plot_path)
 
-        # 保存配置
+        # Save configuration
         config_path = emergency_dir / "config.json"
         with open(config_path, 'w', encoding='utf-8') as f:
-            json.dump(self.config, f, indent=4, ensure_ascii=False)
+            json.dump(vars(self.args), f, indent=4, ensure_ascii=False)
 
-        print(f"紧急保存完成: {emergency_dir}")
+        print(f"Emergency save completed: {emergency_dir}")
 
     def train(self):
-        """主训练循环"""
-        print(f"开始训练...")
-        print(f"使用设备: {self.device}")
+        """Main training loop"""
+        print(f"Starting training...")
+        print(f"Using device: {self.device}")
         print("-" * 50)
 
-        # 准备数据和模型
+        # Prepare data and model
         self.prepare_data()
         self.prepare_model()
 
-        # 训练循环
-        for epoch in range(self.config["training"]["num_epochs"]):
+        # Training loop
+        for epoch in range(self.args.num_epochs):
             if self.emergency_save:
                 break
 
             epoch_start_time = time.time()
 
-            # 显示epoch进度
-            print(f"\nEpoch [{epoch + 1}/{self.config['training']['num_epochs']}]")
+            # Show epoch progress
+            print(f"\nEpoch [{epoch + 1}/{self.args.num_epochs}]")
 
-            # 训练
-            with tqdm(total=len(self.train_loader), desc="训练", ncols=80) as pbar:
+            # Training
+            with tqdm(total=len(self.train_loader), desc="Training", ncols=80) as pbar:
                 self.model.train()
                 total_loss = 0.0
 
@@ -458,7 +535,7 @@ class Trainer:
                     batch_loss = loss.item()
                     total_loss += batch_loss
 
-                    # 更新批次损失记录
+                    # Update batch loss record
                     current_lr = self.optimizer.param_groups[0]['lr']
                     self.monitor.update_batch_loss(batch_loss, current_lr)
 
@@ -467,26 +544,26 @@ class Trainer:
 
                 train_loss = total_loss / len(self.train_loader)
 
-            # 验证
-            with tqdm(total=len(self.val_loader), desc="验证", ncols=80) as pbar:
+            # Validation
+            with tqdm(total=len(self.val_loader), desc="Validation", ncols=80) as pbar:
                 val_loss = self.validate()
                 pbar.update(len(self.val_loader))
                 pbar.set_postfix({'loss': f'{val_loss:.6f}'})
 
-            # 更新epoch损失记录
+            # Update epoch loss record
             self.monitor.update_epoch_loss(train_loss, val_loss)
 
-            # 获取当前学习率
+            # Get current learning rate
             current_lr = self.optimizer.param_groups[0]['lr']
 
-            # 打印epoch结果
-            print(f"训练损失: {train_loss:.6f}, 验证损失: {val_loss:.6f}, 学习率: {current_lr:.6f}")
+            # Print epoch results
+            print(f"Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}, LR: {current_lr:.6f}")
 
-            # 更新学习率
+            # Update learning rate
             if self.scheduler:
                 self.scheduler.step(val_loss)
 
-            # 保存检查点
+            # Save checkpoint
             metrics = {
                 'train_loss': train_loss,
                 'val_loss': val_loss,
@@ -498,33 +575,34 @@ class Trainer:
             )
 
             if is_best:
-                print(f"保存最佳模型！验证损失: {val_loss:.6f}")
+                print(f"Saved best model! Validation loss: {val_loss:.6f}")
 
-            # 保存训练曲线
+            # Save training curves
             plot_path = self.save_dir / "plots" / f"training_curves_epoch_{epoch + 1}.png"
             self.monitor.plot_training_curves(plot_path)
 
-            # 记录日志
+            # Log
             self.monitor.logger.info(
-                f"Epoch {epoch + 1}/{self.config['training']['num_epochs']}: "
+                f"Epoch {epoch + 1}/{self.args.num_epochs}: "
                 f"train_loss={train_loss:.6f}, val_loss={val_loss:.6f}, "
                 f"lr={current_lr:.6f}, time={time.time() - epoch_start_time:.2f}s"
             )
 
-        # 处理中断或正常结束
+        # Handle interruption or normal completion
         if self.emergency_save:
             self.emergency_checkpoint(epoch, train_loss, val_loss)
         else:
-            print("\n训练完成！")
+            print("\nTraining completed!")
 
-            # 保存最终训练曲线
+            # Save final training curves
             final_plot_path = self.save_dir / "plots" / "final_training_curves.png"
             self.monitor.plot_training_curves(final_plot_path)
 
-            print(f"所有结果已保存到: {self.save_dir}")
+            print(f"All results saved to: {self.save_dir}")
 
 
-# ================== 主程序入口 ==================
+# ================== Main Program Entry ==================
 if __name__ == "__main__":
-    trainer = Trainer(CONFIG)
+    args = parse_arguments()
+    trainer = Trainer(args)
     trainer.train()
