@@ -18,13 +18,13 @@ dataset_reorg_train/
 Author: Generated for TrackNetV2 training
 """
 
-import os
-import torch
-from torch.utils.data import Dataset
-from PIL import Image
-import torchvision.transforms as transforms
-from pathlib import Path
 import glob
+from pathlib import Path
+
+import torch
+import torchvision.transforms as transforms
+from PIL import Image
+from torch.utils.data import Dataset
 
 
 class FrameHeatmapDataset(Dataset):
@@ -158,7 +158,6 @@ if __name__ == "__main__":
         transform=transforms.Compose([
             transforms.Resize((288, 512)),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])  # [-1,1]
         ]),
         heatmap_transform=transforms.Compose([
             transforms.Resize((288, 512)),
