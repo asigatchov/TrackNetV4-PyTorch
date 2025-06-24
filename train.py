@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
 
 from TrackNet import TrackNet
-from dataset_preprocessing.dataset_frame_heatmap import FrameHeatmapDataset
+from dataset_preprocess.dataset_frame_heatmap import FrameHeatmapDataset
 
 # ================== 配置 ==================
 CONFIG = {
