@@ -222,9 +222,9 @@ class VideoProcessor:
 def main():
     # 硬编码路径配置
     model_path = "best_model.pth"  # 模型文件路径
-    input_video = "input_video.mp4"  # 输入视频路径
-    output_video = "processed_video.mp4"  # 输出视频文件名
-    work_directory = "video_processing"  # 工作目录名
+    input_video = "dataset_predict/test.mp4"  # 输入视频路径
+    output_video = "dataset_predict/processed_video.mp4"  # 输出视频文件名
+    work_directory = "dataset_predict"  # 工作目录名
 
     print("=== 视频球位置检测与跟踪 ===")
     print(f"模型路径: {model_path}")
