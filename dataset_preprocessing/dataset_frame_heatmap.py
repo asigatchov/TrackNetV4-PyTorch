@@ -1,7 +1,7 @@
 """
 Frame Heatmap Dataset for PyTorch
 
-处理帧图像和对应热力图的数据集，用于TrackNetV2训练。
+处理帧图像和对应热力图的数据集，用于TrackNet训练。
 
 数据集结构：
 dataset_reorg_train/
