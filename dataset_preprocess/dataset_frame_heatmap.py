@@ -1,26 +1,24 @@
 """
 Frame Heatmap Dataset for PyTorch
 
-处理帧图像和对应热力图的数据集，用于TrackNet训练。
+Processes frame images and corresponding heatmaps for TrackNet training.
 
-数据集结构：
+Dataset Structure:
 dataset_reorg_train/
 ├── match1/
 │   ├── inputs/frame1/0.jpg,1.jpg... (512×288)
-│   └── heatmaps/frame1/0.jpg,1.jpg... (热力图)
+│   └── heatmaps/frame1/0.jpg,1.jpg... (heatmaps)
 └── match2/...
 
-数据输出格式：
-- inputs: (9, 288, 512) - 3张RGB图片拼接，归一化至[0,1]
-- heatmaps: (3, 288, 512) - 3张灰度热力图拼接，归一化至[0,1]
-- 严格保证输入输出顺序对应
+Output Format:
+- inputs: (9, 288, 512) - 3 RGB images concatenated, normalized to [0,1]
+- heatmaps: (3, 288, 512) - 3 grayscale heatmaps concatenated, normalized to [0,1]
 
-Author: Generated for TrackNetV2 training
+Author: Generated for TrackNet training
 """
 
 import glob
 from pathlib import Path
-
 import torch
 import torchvision.transforms as transforms
 from PIL import Image
@@ -31,86 +29,91 @@ class FrameHeatmapDataset(Dataset):
     def __init__(self, root_dir, transform=None, heatmap_transform=None):
         """
         Args:
-            root_dir: 数据根目录
-            transform: 输入图片变换（默认归一化至[0,1]）
-            heatmap_transform: 热力图变换（默认归一化至[0,1]）
+            root_dir: Root directory of dataset
+            transform: Transform for input images (default: normalize to [0,1])
+            heatmap_transform: Transform for heatmaps (default: normalize to [0,1])
         """
         self.root_dir = Path(root_dir)
-
-        # 默认变换
-        self.transform = transform or transforms.Compose([
-            transforms.ToTensor()  # [0,1]
-        ])
-
-        self.heatmap_transform = heatmap_transform or transforms.Compose([
-            transforms.ToTensor()  # [0,1]
-        ])
-
-        # 扫描数据集
+        self.transform = transform or transforms.ToTensor()
+        self.heatmap_transform = heatmap_transform or transforms.ToTensor()
         self.data_items = self._scan_dataset()
 
     def _scan_dataset(self):
-        """扫描数据集并构建索引"""
-        data_items = []
-        match_dirs = sorted([d for d in self.root_dir.iterdir()
-                             if d.is_dir() and d.name.startswith('match')])
+        """Scan dataset and build index"""
+        items = []
+        match_dirs = sorted(d for d in self.root_dir.iterdir()
+                            if d.is_dir() and d.name.startswith('match'))
 
-        print(f"扫描 {len(match_dirs)} 个match文件夹...")
+        print(f"Scanning {len(match_dirs)} match folders...")
 
         for match_dir in match_dirs:
-            inputs_dir = match_dir / 'inputs'
-            heatmaps_dir = match_dir / 'heatmaps'
+            items.extend(self._process_match(match_dir))
 
-            if not inputs_dir.exists() or not heatmaps_dir.exists():
-                continue
+        print(f"Found {len(items)} valid samples")
+        return items
 
-            # 获取匹配的frame文件夹
-            input_frames = {d.name for d in inputs_dir.iterdir() if d.is_dir()}
-            heatmap_frames = {d.name for d in heatmaps_dir.iterdir() if d.is_dir()}
-            common_frames = input_frames.intersection(heatmap_frames)
+    def _process_match(self, match_dir):
+        """Process single match directory"""
+        inputs_dir = match_dir / 'inputs'
+        heatmaps_dir = match_dir / 'heatmaps'
 
-            for frame_name in sorted(common_frames):
-                input_frame_dir = inputs_dir / frame_name
-                heatmap_frame_dir = heatmaps_dir / frame_name
+        if not (inputs_dir.exists() and heatmaps_dir.exists()):
+            return []
 
-                # 获取并排序图片
-                input_images = sorted(glob.glob(str(input_frame_dir / "*.jpg")),
-                                      key=lambda x: int(Path(x).stem))
-                heatmap_images = sorted(glob.glob(str(heatmap_frame_dir / "*.jpg")),
-                                        key=lambda x: int(Path(x).stem))
+        items = []
+        common_frames = self._get_common_frames(inputs_dir, heatmaps_dir)
 
-                if len(input_images) != len(heatmap_images) or len(input_images) < 3:
-                    continue
+        for frame_name in sorted(common_frames):
+            items.extend(self._process_frame(match_dir, frame_name))
 
-                # 三帧一组
-                for i in range(len(input_images) - 2):
-                    data_items.append({
-                        'inputs': input_images[i:i + 3],
-                        'heatmaps': heatmap_images[i:i + 3],
-                        'match': match_dir.name,
-                        'frame': frame_name,
-                        'idx': i
-                    })
+        return items
 
-        print(f"找到 {len(data_items)} 个有效样本")
-        return data_items
+    def _get_common_frames(self, inputs_dir, heatmaps_dir):
+        """Get frame folders that exist in both inputs and heatmaps"""
+        input_frames = {d.name for d in inputs_dir.iterdir() if d.is_dir()}
+        heatmap_frames = {d.name for d in heatmaps_dir.iterdir() if d.is_dir()}
+        return input_frames.intersection(heatmap_frames)
+
+    def _process_frame(self, match_dir, frame_name):
+        """Process single frame directory"""
+        input_dir = match_dir / 'inputs' / frame_name
+        heatmap_dir = match_dir / 'heatmaps' / frame_name
+
+        input_files = self._get_sorted_images(input_dir)
+        heatmap_files = self._get_sorted_images(heatmap_dir)
+
+        if len(input_files) != len(heatmap_files) or len(input_files) < 3:
+            return []
+
+        # Generate 3-frame sequences
+        return [
+            {
+                'inputs': input_files[i:i + 3],
+                'heatmaps': heatmap_files[i:i + 3],
+                'match': match_dir.name,
+                'frame': frame_name,
+                'idx': i
+            }
+            for i in range(len(input_files) - 2)
+        ]
+
+    def _get_sorted_images(self, directory):
+        """Get sorted image files by numeric stem"""
+        return sorted(glob.glob(str(directory / "*.jpg")),
+                      key=lambda x: int(Path(x).stem))
 
     def _load_image(self, image_path, is_heatmap=False):
-        """加载图片"""
+        """Load and transform image"""
         try:
             image = Image.open(image_path)
             if is_heatmap:
-                # 热力图转灰度
-                if image.mode != 'L':
-                    image = image.convert('L')
+                image = image.convert('L')
                 return self.heatmap_transform(image)
             else:
-                # 输入图片转RGB
                 image = image.convert('RGB')
                 return self.transform(image)
         except Exception as e:
-            print(f"图片加载失败: {image_path}")
-            # 返回零张量
+            print(f"Failed to load image: {image_path}")
             channels = 1 if is_heatmap else 3
             return torch.zeros(channels, 288, 512)
 
@@ -119,55 +122,43 @@ class FrameHeatmapDataset(Dataset):
 
     def __getitem__(self, idx):
         """
-        返回:
-            inputs: (9, 288, 512) - 3张RGB图片，[0,1]
-            heatmaps: (3, 288, 512) - 3张灰度热力图，[0,1]
+        Returns:
+            inputs: (9, 288, 512) - 3 RGB images, [0,1]
+            heatmaps: (3, 288, 512) - 3 grayscale heatmaps, [0,1]
         """
         item = self.data_items[idx]
 
-        # 加载3张输入图片
-        inputs = [self._load_image(path, False) for path in item['inputs']]
-        # 加载3张热力图
-        heatmaps = [self._load_image(path, True) for path in item['heatmaps']]
-
-        # 拼接
-        inputs = torch.cat(inputs, dim=0)  # (9, 288, 512)
-        heatmaps = torch.cat(heatmaps, dim=0)  # (3, 288, 512)
+        inputs = torch.cat([self._load_image(path, False) for path in item['inputs']], dim=0)
+        heatmaps = torch.cat([self._load_image(path, True) for path in item['heatmaps']], dim=0)
 
         return inputs, heatmaps
 
     def get_info(self, idx):
-        """获取样本信息"""
+        """Get sample information"""
         return self.data_items[idx]
 
 
 if __name__ == "__main__":
-    # 使用示例
-    root_dir = "../dataset/Test_reorg_train"
+    # Usage example
+    root_dir = "../dataset/Test_preprocessed"
 
-    # 1. 基础使用
+    # Create dataset
     dataset = FrameHeatmapDataset(root_dir)
-    print(f"数据集大小: {len(dataset)}")
+    print(f"Dataset size: {len(dataset)}")
 
-    # 2. 创建数据集
-    custom_dataset = FrameHeatmapDataset(root_dir=root_dir)
-
-    # 3. 创建DataLoader
+    # Create DataLoader
     dataloader = torch.utils.data.DataLoader(
-        dataset,
-        batch_size=2,
-        shuffle=True,
-        num_workers=2
+        dataset, batch_size=2, shuffle=True, num_workers=2
     )
 
-    # 4. 测试数据加载
-    print("\n测试数据加载:")
+    # Test data loading
+    print("\nTesting data loading:")
     for batch_idx, (inputs, heatmaps) in enumerate(dataloader):
         print(f"Batch {batch_idx}: inputs{inputs.shape}, heatmaps{heatmaps.shape}")
-        print(f"  输入范围: [{inputs.min():.3f}, {inputs.max():.3f}]")
-        print(f"  热力图范围: [{heatmaps.min():.3f}, {heatmaps.max():.3f}]")
+        print(f"  Input range: [{inputs.min():.3f}, {inputs.max():.3f}]")
+        print(f"  Heatmap range: [{heatmaps.min():.3f}, {heatmaps.max():.3f}]")
 
         if batch_idx == 0:
             info = dataset.get_info(0)
-            print(f"  样本信息: {info['match']}/{info['frame']}, 起始索引{info['idx']}")
+            print(f"  Sample info: {info['match']}/{info['frame']}, start index {info['idx']}")
         break

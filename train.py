@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
 """
 TrackNet Training Script - Optimized Version with Argument Support
 
@@ -9,13 +7,13 @@ includes comprehensive logging, checkpointing, and visualization features.
 
 Usage Examples:
 1. Basic training with default settings:
-   python train_tracknet.py --dataset_dir dataset/Professional_reorg_train
+   python train.py --dataset_dir dataset/Professional_reorg_train
 
 2. Custom training with specific parameters:
-   python train_tracknet.py --dataset_dir dataset/Professional_reorg_train --batch_size 8 --num_epochs 50 --lr 2.0 --device cuda
+   python train.py --dataset_dir dataset/Professional_reorg_train --batch_size 8 --num_epochs 50 --lr 2.0 --device cuda
 
 3. Advanced training with all custom settings:
-   python train_tracknet.py --dataset_dir dataset/Professional_reorg_train --batch_size 4 --num_epochs 100 --lr 1.5 --train_ratio 0.9 --save_dir outputs --experiment_name advanced_experiment --plot_interval 5 --patience 5
+   python train.py --dataset_dir dataset/Professional_reorg_train --batch_size 4 --num_epochs 100 --lr 1.5 --train_ratio 0.9 --save_dir outputs --experiment_name advanced_experiment --plot_interval 5 --patience 5
 
 Parameter Functions:
 - dataset_dir: Path to training dataset directory (required)
