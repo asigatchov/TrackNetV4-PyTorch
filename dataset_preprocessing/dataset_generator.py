@@ -32,20 +32,17 @@ class FrameHeatmapDataset(Dataset):
         """
         Args:
             root_dir: 数据根目录
-            transform: 输入图片变换（默认归一化至[-1,1]）
+            transform: 输入图片变换（默认归一化至[0,1]）
             heatmap_transform: 热力图变换（默认归一化至[0,1]）
         """
         self.root_dir = Path(root_dir)
 
         # 默认变换
         self.transform = transform or transforms.Compose([
-            transforms.Resize((288, 512)),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])  # [0,1] -> [-1,1]
         ])
 
         self.heatmap_transform = heatmap_transform or transforms.Compose([
-            transforms.Resize((288, 512)),
             transforms.ToTensor()  # [0,1]
         ])
 
@@ -153,17 +150,7 @@ if __name__ == "__main__":
     print(f"数据集大小: {len(dataset)}")
 
     # 2. 自定义变换
-    custom_dataset = FrameHeatmapDataset(
-        root_dir=root_dir,
-        transform=transforms.Compose([
-            transforms.Resize((288, 512)),
-            transforms.ToTensor(),
-        ]),
-        heatmap_transform=transforms.Compose([
-            transforms.Resize((288, 512)),
-            transforms.ToTensor()  # [0,1]
-        ])
-    )
+    custom_dataset = FrameHeatmapDataset(root_dir=root_dir)
 
     # 3. 创建DataLoader
     dataloader = torch.utils.data.DataLoader(

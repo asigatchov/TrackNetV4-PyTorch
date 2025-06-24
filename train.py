@@ -12,17 +12,7 @@ if __name__ == "__main__":
     print(f"数据集大小: {len(dataset)}")
 
     # 2. 自定义变换
-    origin_dataset = FrameHeatmapDataset(
-        root_dir=root_dir,
-        transform=transforms.Compose([
-            transforms.Resize((288, 512)),
-            transforms.ToTensor(),
-        ]),
-        heatmap_transform=transforms.Compose([
-            transforms.Resize((288, 512)),
-            transforms.ToTensor()  # [0,1]
-        ])
-    )
+    origin_dataset = FrameHeatmapDataset(root_dir=root_dir)
 
     # 3. 创建DataLoader
     dataloader = torch.utils.data.DataLoader(
@@ -32,11 +22,11 @@ if __name__ == "__main__":
         num_workers=2
     )
 
-    #分割为80%训练集和20%验证集
+    # 分割为80%训练集和20%验证集
     train_size = int(0.8 * len(origin_dataset))
     val_size = len(origin_dataset) - train_size
 
-    #设定随机种子以确保分割可重复性
+    # 设定随机种子以确保分割可重复性
     torch.manual_seed(26)
     # 分割数据集
     train_dataset, val_dataset = torch.utils.data.random_split(origin_dataset, [train_size, val_size])
@@ -67,7 +57,3 @@ if __name__ == "__main__":
     for inputs, heatmaps in val_loader:
         print(f"验证集输入形状: {inputs.shape}, 验证集热力图形状: {heatmaps.shape}")
         break
-
-
-
-
