@@ -11,7 +11,7 @@ dataset_reorg_train/
 └── match2/...
 
 数据输出格式：
-- inputs: (9, 288, 512) - 3张RGB图片拼接，归一化至[-1,1]
+- inputs: (9, 288, 512) - 3张RGB图片拼接，归一化至[0,1]
 - heatmaps: (3, 288, 512) - 3张灰度热力图拼接，归一化至[0,1]
 - 严格保证输入输出顺序对应
 
@@ -39,7 +39,7 @@ class FrameHeatmapDataset(Dataset):
 
         # 默认变换
         self.transform = transform or transforms.Compose([
-            transforms.ToTensor(),
+            transforms.ToTensor()  # [0,1]
         ])
 
         self.heatmap_transform = heatmap_transform or transforms.Compose([
@@ -120,7 +120,7 @@ class FrameHeatmapDataset(Dataset):
     def __getitem__(self, idx):
         """
         返回:
-            inputs: (9, 288, 512) - 3张RGB图片，[-1,1]
+            inputs: (9, 288, 512) - 3张RGB图片，[0,1]
             heatmaps: (3, 288, 512) - 3张灰度热力图，[0,1]
         """
         item = self.data_items[idx]
@@ -149,7 +149,7 @@ if __name__ == "__main__":
     dataset = FrameHeatmapDataset(root_dir)
     print(f"数据集大小: {len(dataset)}")
 
-    # 2. 自定义变换
+    # 2. 创建数据集
     custom_dataset = FrameHeatmapDataset(root_dir=root_dir)
 
     # 3. 创建DataLoader

@@ -2,6 +2,43 @@ import torch
 import torch.nn as nn
 
 
+class WeightedBinaryCrossEntropy(nn.Module):
+    """
+    论文中定义的加权二元交叉熵损失函数
+    WBCE = -Σ[(1-w)² * ŷ * log(y) + w² * (1-ŷ) * log(1-y)]
+    其中 w = y (预测值本身作为权重)
+    """
+
+    def __init__(self, epsilon=1e-7):
+        super(WeightedBinaryCrossEntropy, self).__init__()
+        self.epsilon = epsilon  # 防止log(0)
+
+    def forward(self, y_pred, y_true):
+        """
+        Args:
+            y_pred: 模型预测 [B, 3, H, W]，值域[0,1]
+            y_true: 真实标签 [B, 3, H, W]，值域{0,1}
+        Returns:
+            loss: 标量损失值
+        """
+        # 确保预测值在有效范围内，避免log(0)
+        y_pred = torch.clamp(y_pred, self.epsilon, 1 - self.epsilon)
+
+        # w = y (论文定义：权重等于预测值)
+        w = y_pred
+
+        # 计算加权二元交叉熵
+        # WBCE = -Σ[(1-w)² * ŷ * log(y) + w² * (1-ŷ) * log(1-y)]
+        term1 = (1 - w) ** 2 * y_true * torch.log(y_pred)
+        term2 = w ** 2 * (1 - y_true) * torch.log(1 - y_pred)
+
+        # 负号在前，求和
+        wbce = -(term1 + term2)
+
+        # 返回批次平均损失
+        return wbce.mean()
+
+
 class TrackNet(nn.Module):
     """
     TrackNet MIMO版本 - 羽毛球追踪网络
@@ -120,23 +157,83 @@ class TrackNet(nn.Module):
         return out  # out[:,0]=第1帧, out[:,1]=第2帧, out[:,2]=第3帧
 
 
+def generate_heatmap(size, center, sigma=5):
+    """
+    生成2D高斯热力图作为ground truth
+    Args:
+        size: (H, W) 热力图尺寸
+        center: (x, y) 中心点坐标
+        sigma: 高斯分布标准差
+    Returns:
+        heatmap: [H, W] 热力图
+    """
+    H, W = size
+    x, y = center
+
+    # 创建坐标网格
+    X, Y = torch.meshgrid(torch.arange(W), torch.arange(H), indexing='xy')
+    X = X.float()
+    Y = Y.float()
+
+    # 计算高斯分布
+    heatmap = torch.exp(-((X - x) ** 2 + (Y - y) ** 2) / (2 * sigma ** 2))
+
+    return heatmap
+
+
 if __name__ == "__main__":
+    # 创建模型和损失函数
     model = TrackNet()
+    criterion = WeightedBinaryCrossEntropy()
 
     # 参数量统计
     params = sum(p.numel() for p in model.parameters())
     print(f"参数量: {params:,}")
 
-    # 测试通道数变化
-    test_input = torch.randn(1, 9, 288, 512)  # 3帧×3通道=9
+    # 测试前向传播
+    batch_size = 2
+    test_input = torch.randn(batch_size, 9, 288, 512)  # 3帧×3通道=9
     output = model(test_input)
 
-    print(f"输入: {test_input.shape} (3帧×3通道)")
+    print(f"\n输入: {test_input.shape} (3帧×3通道)")
     print(f"输出: {output.shape} (3个热力图)")
     print(f"输出范围: [{output.min():.3f}, {output.max():.3f}]")
 
-    # MIMO演示: 分离3帧预测
-    frame1_pred = output[0, 0]  # [288, 512] 第1帧热力图
-    frame2_pred = output[0, 1]  # [288, 512] 第2帧热力图
-    frame3_pred = output[0, 2]  # [288, 512] 第3帧热力图
-    print(f"分离后每帧: {frame1_pred.shape}")
+    # 创建测试用的ground truth热力图
+    gt_heatmaps = torch.zeros(batch_size, 3, 288, 512)
+
+    # 为每个批次和每帧生成随机的球位置
+    for b in range(batch_size):
+        for f in range(3):
+            # 随机球位置
+            ball_x = torch.randint(50, 462, (1,)).item()
+            ball_y = torch.randint(50, 238, (1,)).item()
+
+            # 生成高斯热力图
+            heatmap = generate_heatmap((288, 512), (ball_x, ball_y))
+            gt_heatmaps[b, f] = heatmap
+
+    # 计算损失
+    loss = criterion(output, gt_heatmaps)
+    print(f"\n损失值: {loss.item():.4f}")
+
+    # 演示加权效果
+    print("\n演示加权机制:")
+    # 创建一个简单的例子
+    y_pred_demo = torch.tensor([[0.1, 0.9], [0.5, 0.5]])  # 预测值
+    y_true_demo = torch.tensor([[0.0, 1.0], [1.0, 0.0]])  # 真实值
+
+    # 计算权重 w = y
+    w_demo = y_pred_demo
+
+    # 显示每个像素的权重
+    print(f"预测值: {y_pred_demo}")
+    print(f"真实值: {y_true_demo}")
+    print(f"权重 w: {w_demo}")
+
+    # 计算各项
+    term1 = (1 - w_demo) ** 2 * y_true_demo
+    term2 = w_demo ** 2 * (1 - y_true_demo)
+
+    print(f"背景权重 (1-w)²: {(1 - w_demo) ** 2}")
+    print(f"前景权重 w²: {w_demo ** 2}")
