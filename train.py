@@ -50,7 +50,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
 
-from tracknet import TrackNet
+from tracknet_v4 import TrackNetV4 as TrackNet
 from dataset_preprocess.dataset_frame_heatmap import FrameHeatmapDataset
 
 
