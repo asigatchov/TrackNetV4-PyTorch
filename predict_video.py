@@ -43,7 +43,7 @@ class TrackNetPredictor:
 class VideoProcessor:
     def __init__(self, model_path, dot_size=3):
         self.predictor = TrackNetPredictor(model_path)
-        self.dot_size = dot_size  # 红点大小参数
+        self.dot_size = dot_size
 
     def extract_frames(self, video_path):
         cap = cv2.VideoCapture(video_path)
@@ -62,7 +62,7 @@ class VideoProcessor:
                 pbar.update(1)
 
         cap.release()
-        print(f"✅ Extraction complete: {len(frames)} frames, {width}x{height}, {fps:.1f}FPS")
+        tqdm.write(f"✅ Extraction complete: {len(frames)} frames, {width}x{height}, {fps:.1f}FPS")
         return frames, (width, height), fps
 
     def group_frames(self, frames):
@@ -72,7 +72,7 @@ class VideoProcessor:
                 groups.append(frames[i:i + 3])
 
         discarded = len(frames) - len(groups) * 3
-        print(f"🏸 Grouping complete: {len(groups)} groups (3 frames/group), {discarded} frames discarded")
+        tqdm.write(f"🏸 Grouping complete: {len(groups)} groups (3 frames/group), {discarded} frames discarded")
         return groups
 
     def scale_coordinates(self, coords, original_size):
@@ -84,9 +84,9 @@ class VideoProcessor:
         return (int(x * scale_x), int(y * scale_y))
 
     def draw_ball(self, frame, ball_pos):
-        """Draw a red dot on the frame with adjustable size"""
+        """Draw red dot on frame with adjustable size"""
         if ball_pos is not None:
-            cv2.circle(frame, ball_pos, self.dot_size, (0, 0, 255), -1)  # 使用可调节的红点大小
+            cv2.circle(frame, ball_pos, self.dot_size, (0, 0, 255), -1)
         return frame
 
     def process_video(self, video_path, output_path="processed_video.mp4"):
@@ -116,7 +116,7 @@ class VideoProcessor:
                 pbar.update(1)
 
         detection_rate = (ball_detected_count / total_processed_frames) * 100
-        print(f"🎯 Detection stats: {ball_detected_count}/{total_processed_frames} frames ({detection_rate:.1f}%)")
+        tqdm.write(f"🎯 Detection stats: {ball_detected_count}/{total_processed_frames} frames ({detection_rate:.1f}%)")
 
         self.save_video(processed_frames, output_path, fps, original_size)
         return output_path
@@ -134,7 +134,7 @@ class VideoProcessor:
                 pbar.update(1)
 
         out.release()
-        print(f"✅ Video saved successfully: {output_path}")
+        tqdm.write(f"✅ Video saved successfully: {output_path}")
 
 
 def main():
@@ -142,8 +142,8 @@ def main():
     input_video = "dataset_predict/test.mp4"
     output_video = "dataset_predict/processed_video.mp4"
 
-    # 硬编码红点大小参数 (像素)
-    RED_DOT_SIZE = 7  # 可以调整这个值：1=很小, 3=小, 5=中等, 8=大, 12=很大
+    # Adjustable red dot size (pixels)
+    RED_DOT_SIZE = 7  # 1=tiny, 3=small, 5=medium, 8=large, 12=very large
 
     print("=" * 60)
     print("🏸 Badminton Shuttlecock Detection & Tracking System")
