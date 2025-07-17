@@ -38,7 +38,7 @@ class MotionFusion(nn.Module):
                             mot[:, 1] * vis[:, 2]], dim=1)
 
 
-class TrackNetV4(nn.Module):
+class TrackNet(nn.Module):
     """Motion-Enhanced Sports Tracking Network"""
 
     def __init__(self):
@@ -130,7 +130,7 @@ def gaussian_heatmap(size, center, sigma=5):
 
 
 if __name__ == "__main__":
-    model = TrackNetV4()
+    model = TrackNet()
     print(f"Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     # Test
@@ -138,4 +138,4 @@ if __name__ == "__main__":
     y = model(x)
     print(f"Input: {x.shape} -> Output: {y.shape}")
     print(f"Range: [{y.min():.3f}, {y.max():.3f}]")
-    print("TrackNetV4 ready!")
+    print("TrackNet ready!")

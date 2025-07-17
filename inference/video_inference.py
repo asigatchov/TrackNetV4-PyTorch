@@ -6,7 +6,7 @@ import cv2
 import torch
 import os
 from tqdm import tqdm
-from tracknet_v4 import TrackNetV4 as TrackNet
+from model.tracknet import TrackNetV4 as TrackNet
 
 
 class TrackNetPredictor:

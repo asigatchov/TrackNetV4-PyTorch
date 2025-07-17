@@ -5,7 +5,7 @@ import numpy as np
 import cv2
 import torch
 import matplotlib.pyplot as plt
-from tracknet_v4 import TrackNetV4 as TrackNet
+from model.tracknet import TrackNetV4 as TrackNet
 
 
 class TrackNetPredictor:
