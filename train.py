@@ -1,38 +1,47 @@
 """
-TrackNet Training Script - Optimized Version with Argument Support
+TrackNet Training Script - Optimized with Resume Functionality
 
 This script trains a TrackNet model for badminton tracking using PyTorch.
-The script supports custom configurations through command-line arguments and
-includes comprehensive logging, checkpointing, and visualization features.
+Supports custom configurations and checkpoint resuming for interrupted training.
 
 Usage Examples:
 1. Basic training with default settings:
-   python train.py --dataset_dir dataset/Professional_reorg_train
+   python train.py --data dataset/Professional_reorg_train
 
 2. Custom training with specific parameters:
-   python train.py --dataset_dir dataset/Professional_reorg_train --batch_size 8 --num_epochs 50 --lr 2.0 --device cuda
+   python train.py --data dataset/train --batch 8 --epochs 50 --lr 2.0 --device cuda
 
 3. Advanced training with all custom settings:
-   python train.py --dataset_dir dataset/Professional_reorg_train --batch_size 4 --num_epochs 100 --lr 1.5 --train_ratio 0.9 --save_dir outputs --experiment_name advanced_experiment --plot_interval 5 --patience 5
+   python train.py --data dataset/train --batch 4 --epochs 100 --lr 1.5 --split 0.9 --out outputs --name advanced_exp --plot 5 --patience 5
+
+4. Resume training from checkpoint:
+   python train.py --resume checkpoints/best_model.pth --data dataset/train
+
+5. Resume with modified settings:
+   python train.py --resume checkpoints/checkpoint_epoch_20.pth --data dataset/train --epochs 100 --device cuda
+
+6. High-performance training:
+   python train.py --data dataset/train --batch 16 --workers 4 --device cuda --seed 42 --name gpu_training
 
 Parameter Functions:
-- dataset_dir: Path to training dataset directory (required)
-- train_ratio: Proportion of data for training (default: 0.8)
-- random_seed: Random seed for data splitting (default: 26)
-- batch_size: Number of samples per training batch (default: 3)
-- num_epochs: Total training epochs (default: 30)
-- num_workers: Number of data loading workers (default: 0)
+- data: Path to training dataset directory (required)
+- resume: Path to checkpoint file for resuming training (optional)
+- split: Proportion of data for training (default: 0.8)
+- seed: Random seed for data splitting (default: 26)
+- batch: Number of samples per training batch (default: 3)
+- epochs: Total training epochs (default: 30)
+- workers: Number of data loading workers (default: 0)
 - device: Computing device - auto/cpu/cuda/mps (default: auto)
 - optimizer: Optimizer type - Adadelta/Adam/SGD (default: Adadelta)
 - lr: Initial learning rate for optimizer (default: 1.0)
-- weight_decay: Weight decay for optimizer (default: 0)
+- wd: Weight decay for optimizer (default: 0)
 - scheduler: Learning rate scheduler type (default: ReduceLROnPlateau)
 - factor: Factor by which LR is reduced (default: 0.5)
 - patience: Epochs to wait before reducing LR (default: 3)
 - min_lr: Minimum learning rate (default: 1e-6)
-- plot_interval: Interval for recording batch losses (default: 10)
-- save_dir: Directory to save training outputs (default: training_outputs)
-- experiment_name: Name prefix for experiment files (default: tracknet_experiment)
+- plot: Interval for recording batch losses (default: 10)
+- out: Directory to save training outputs (default: training_outputs)
+- name: Name prefix for experiment files (default: tracknet_experiment)
 """
 
 import argparse
@@ -57,30 +66,35 @@ from dataset_preprocess.dataset_frame_heatmap import FrameHeatmapDataset
 def parse_arguments():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(
-        description="TrackNet Training Script",
+        description="TrackNet Training Script with Resume Functionality",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s --dataset_dir dataset/train
-  %(prog)s --dataset_dir dataset/train --batch_size 8 --num_epochs 50
-  %(prog)s --dataset_dir dataset/train --batch_size 4 --lr 2.0 --device cuda
+  %(prog)s --data dataset/train
+  %(prog)s --data dataset/train --batch 8 --epochs 50
+  %(prog)s --resume checkpoints/best_model.pth
+  %(prog)s --resume checkpoint.pth --epochs 100 --device cuda
         """
     )
 
-    # Dataset arguments
-    parser.add_argument('--dataset_dir', type=str, required=True,
+    # Main arguments
+    parser.add_argument('--data', type=str, required=True,
                         help='Path to the training dataset directory')
-    parser.add_argument('--train_ratio', type=float, default=0.8,
+    parser.add_argument('--resume', type=str,
+                        help='Path to checkpoint file for resuming training')
+
+    # Dataset arguments
+    parser.add_argument('--split', type=float, default=0.8,
                         help='Ratio of training data (default: 0.8)')
-    parser.add_argument('--random_seed', type=int, default=26,
+    parser.add_argument('--seed', type=int, default=26,
                         help='Random seed for data splitting (default: 26)')
 
     # Training arguments
-    parser.add_argument('--batch_size', type=int, default=3,
+    parser.add_argument('--batch', type=int, default=3,
                         help='Batch size for training (default: 3)')
-    parser.add_argument('--num_epochs', type=int, default=30,
+    parser.add_argument('--epochs', type=int, default=30,
                         help='Number of training epochs (default: 30)')
-    parser.add_argument('--num_workers', type=int, default=0,
+    parser.add_argument('--workers', type=int, default=0,
                         help='Number of data loading workers (default: 0)')
     parser.add_argument('--device', type=str, default='auto',
                         help='Device to use: auto/cpu/cuda/mps (default: auto)')
@@ -91,7 +105,7 @@ Examples:
                         help='Optimizer type (default: Adadelta)')
     parser.add_argument('--lr', type=float, default=1.0,
                         help='Learning rate (default: 1.0)')
-    parser.add_argument('--weight_decay', type=float, default=0,
+    parser.add_argument('--wd', type=float, default=0,
                         help='Weight decay for optimizer (default: 0)')
 
     # Learning rate scheduler arguments
@@ -106,14 +120,15 @@ Examples:
                         help='Minimum learning rate (default: 1e-6)')
 
     # Logging and saving arguments
-    parser.add_argument('--plot_interval', type=int, default=10,
+    parser.add_argument('--plot', type=int, default=10,
                         help='Interval for recording batch losses (default: 10)')
-    parser.add_argument('--save_dir', type=str, default='training_outputs',
+    parser.add_argument('--out', type=str, default='training_outputs',
                         help='Directory to save outputs (default: training_outputs)')
-    parser.add_argument('--experiment_name', type=str, default='tracknet_experiment',
+    parser.add_argument('--name', type=str, default='tracknet_experiment',
                         help='Name for this experiment (default: tracknet_experiment)')
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    return args
 
 
 class WeightedBinaryCrossEntropy(nn.Module):
@@ -186,12 +201,36 @@ class TrainingMonitor:
         )
         self.logger = logging.getLogger(__name__)
 
+    def load_history(self, checkpoint):
+        """Load training history from checkpoint"""
+        if 'training_history' in checkpoint:
+            history = checkpoint['training_history']
+            self.batch_losses = history.get('batch_losses', [])
+            self.batch_steps = history.get('batch_steps', [])
+            self.batch_lrs = history.get('batch_lrs', [])
+            self.epoch_train_losses = history.get('epoch_train_losses', [])
+            self.epoch_val_losses = history.get('epoch_val_losses', [])
+            self.epoch_steps = history.get('epoch_steps', [])
+            self.current_batch = history.get('current_batch', 0)
+
+    def get_history(self):
+        """Get current training history for saving"""
+        return {
+            'batch_losses': self.batch_losses,
+            'batch_steps': self.batch_steps,
+            'batch_lrs': self.batch_lrs,
+            'epoch_train_losses': self.epoch_train_losses,
+            'epoch_val_losses': self.epoch_val_losses,
+            'epoch_steps': self.epoch_steps,
+            'current_batch': self.current_batch
+        }
+
     def update_batch_loss(self, loss, lr):
         """Update batch loss for plotting"""
         self.current_batch += 1
 
         # Record according to configured interval
-        if self.current_batch % self.args.plot_interval == 0:
+        if self.current_batch % self.args.plot == 0:
             self.batch_losses.append(loss)
             self.batch_steps.append(self.current_batch)
             self.batch_lrs.append(lr)
@@ -210,7 +249,7 @@ class TrainingMonitor:
         # Plot batch losses
         if self.batch_losses:
             ax1.plot(self.batch_steps, self.batch_losses, 'b-', alpha=0.3,
-                     label=f'Batch Loss (every {self.args.plot_interval} batches)')
+                     label=f'Batch Loss (every {self.args.plot} batches)')
 
         # Plot epoch losses
         if self.epoch_train_losses:
@@ -229,7 +268,7 @@ class TrainingMonitor:
         # Learning rate curve
         if self.batch_lrs:
             ax2.plot(self.batch_steps, self.batch_lrs, 'g-', linewidth=2)
-            ax2.set_xlabel(f'Batch Number (every {self.args.plot_interval} batches)')
+            ax2.set_xlabel(f'Batch Number (every {self.args.plot} batches)')
             ax2.set_ylabel('Learning Rate')
             ax2.set_title('Learning Rate Schedule')
             ax2.grid(True, alpha=0.3)
@@ -247,7 +286,7 @@ class ModelCheckpoint:
         self.save_dir = save_dir
         self.best_loss = float('inf')
 
-    def save_checkpoint(self, model, optimizer, scheduler, epoch, metrics):
+    def save_checkpoint(self, model, optimizer, scheduler, epoch, metrics, training_history):
         """Save checkpoint"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -257,6 +296,7 @@ class ModelCheckpoint:
             'optimizer_state_dict': optimizer.state_dict(),
             'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
             'metrics': metrics,
+            'training_history': training_history,
             'timestamp': timestamp
         }
 
@@ -280,6 +320,8 @@ class Trainer:
 
     def __init__(self, args):
         self.args = args
+        self.start_epoch = 0
+        self.resume_checkpoint = None
 
         # Setup device
         if args.device == 'auto':
@@ -292,6 +334,10 @@ class Trainer:
         else:
             self.device = torch.device(args.device)
 
+        # Load checkpoint if resuming
+        if args.resume:
+            self.load_checkpoint()
+
         # Create save directories
         self.setup_directories()
 
@@ -299,10 +345,30 @@ class Trainer:
         self.monitor = TrainingMonitor(args, self.save_dir)
         self.checkpoint = ModelCheckpoint(self.save_dir / "checkpoints")
 
+        # Load training history if resuming
+        if self.resume_checkpoint:
+            self.monitor.load_history(self.resume_checkpoint)
+            if 'metrics' in self.resume_checkpoint and 'val_loss' in self.resume_checkpoint['metrics']:
+                self.checkpoint.best_loss = self.resume_checkpoint['metrics']['val_loss']
+
         # Setup interrupt handling
         self.emergency_save = False
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
+
+    def load_checkpoint(self):
+        """Load checkpoint for resuming training"""
+        checkpoint_path = Path(self.args.resume)
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
+
+        print(f"Loading checkpoint from: {checkpoint_path}")
+        self.resume_checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        self.start_epoch = self.resume_checkpoint['epoch'] + 1
+
+        print(f"Resuming training from epoch {self.start_epoch}")
+
+        print("Dataset path must be specified with --data for resuming training")
 
     def signal_handler(self, signum, frame):
         """Handle interrupt signals"""
@@ -311,10 +377,15 @@ class Trainer:
 
     def setup_directories(self):
         """Setup directory structure"""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        experiment_name = f"{self.args.experiment_name}_{timestamp}"
+        if self.args.resume:
+            # For resumed training, create a new timestamped directory
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            experiment_name = f"{self.args.name}_resumed_{timestamp}"
+        else:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            experiment_name = f"{self.args.name}_{timestamp}"
 
-        self.save_dir = Path(self.args.save_dir) / experiment_name
+        self.save_dir = Path(self.args.out) / experiment_name
         self.save_dir.mkdir(parents=True, exist_ok=True)
 
         # Create subdirectories
@@ -330,16 +401,14 @@ class Trainer:
     def prepare_data(self):
         """Prepare dataset and data loaders"""
         print("Loading dataset...")
-
-        # Load dataset
-        dataset = FrameHeatmapDataset(self.args.dataset_dir)
+        dataset = FrameHeatmapDataset(self.args.data)
         print(f"Dataset size: {len(dataset)}")
 
         # Set random seed
-        torch.manual_seed(self.args.random_seed)
+        torch.manual_seed(self.args.seed)
 
         # Split dataset
-        train_size = int(self.args.train_ratio * len(dataset))
+        train_size = int(self.args.split * len(dataset))
         val_size = len(dataset) - train_size
 
         train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
@@ -347,17 +416,17 @@ class Trainer:
         # Create data loaders
         self.train_loader = DataLoader(
             train_dataset,
-            batch_size=self.args.batch_size,
+            batch_size=self.args.batch,
             shuffle=True,
-            num_workers=self.args.num_workers,
+            num_workers=self.args.workers,
             pin_memory=True if self.device.type == 'cuda' else False
         )
 
         self.val_loader = DataLoader(
             val_dataset,
-            batch_size=self.args.batch_size,
+            batch_size=self.args.batch,
             shuffle=False,
-            num_workers=self.args.num_workers,
+            num_workers=self.args.workers,
             pin_memory=True if self.device.type == 'cuda' else False
         )
 
@@ -379,19 +448,19 @@ class Trainer:
             self.optimizer = torch.optim.Adadelta(
                 self.model.parameters(),
                 lr=self.args.lr,
-                weight_decay=self.args.weight_decay
+                weight_decay=self.args.wd
             )
         elif self.args.optimizer == "Adam":
             self.optimizer = torch.optim.Adam(
                 self.model.parameters(),
                 lr=self.args.lr,
-                weight_decay=self.args.weight_decay
+                weight_decay=self.args.wd
             )
         elif self.args.optimizer == "SGD":
             self.optimizer = torch.optim.SGD(
                 self.model.parameters(),
                 lr=self.args.lr,
-                weight_decay=self.args.weight_decay,
+                weight_decay=self.args.wd,
                 momentum=0.9
             )
 
@@ -406,6 +475,20 @@ class Trainer:
             )
         else:
             self.scheduler = None
+
+        # Load checkpoint states if resuming
+        if self.resume_checkpoint:
+            print("Loading model state from checkpoint...")
+            self.model.load_state_dict(self.resume_checkpoint['model_state_dict'])
+
+            print("Loading optimizer state from checkpoint...")
+            self.optimizer.load_state_dict(self.resume_checkpoint['optimizer_state_dict'])
+
+            if self.scheduler and self.resume_checkpoint['scheduler_state_dict']:
+                print("Loading scheduler state from checkpoint...")
+                self.scheduler.load_state_dict(self.resume_checkpoint['scheduler_state_dict'])
+
+            print(f"Successfully resumed from epoch {self.start_epoch}")
 
     def train_epoch(self):
         """Train one epoch"""
@@ -478,7 +561,8 @@ class Trainer:
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict() if self.scheduler else None,
             'train_loss': train_loss,
-            'val_loss': val_loss
+            'val_loss': val_loss,
+            'training_history': self.monitor.get_history()
         }, checkpoint_path)
 
         # Save training curves
@@ -496,6 +580,8 @@ class Trainer:
         """Main training loop"""
         print(f"Starting training...")
         print(f"Using device: {self.device}")
+        if self.args.resume:
+            print(f"Resuming from epoch {self.start_epoch}")
         print("-" * 50)
 
         # Prepare data and model
@@ -503,14 +589,14 @@ class Trainer:
         self.prepare_model()
 
         # Training loop
-        for epoch in range(self.args.num_epochs):
+        for epoch in range(self.start_epoch, self.args.epochs):
             if self.emergency_save:
                 break
 
             epoch_start_time = time.time()
 
             # Show epoch progress
-            print(f"\nEpoch [{epoch + 1}/{self.args.num_epochs}]")
+            print(f"\nEpoch [{epoch + 1}/{self.args.epochs}]")
 
             # Training
             with tqdm(total=len(self.train_loader), desc="Training", ncols=80) as pbar:
@@ -569,7 +655,7 @@ class Trainer:
             }
 
             checkpoint_path, is_best = self.checkpoint.save_checkpoint(
-                self.model, self.optimizer, self.scheduler, epoch, metrics
+                self.model, self.optimizer, self.scheduler, epoch, metrics, self.monitor.get_history()
             )
 
             if is_best:
@@ -581,7 +667,7 @@ class Trainer:
 
             # Log
             self.monitor.logger.info(
-                f"Epoch {epoch + 1}/{self.args.num_epochs}: "
+                f"Epoch {epoch + 1}/{self.args.epochs}: "
                 f"train_loss={train_loss:.6f}, val_loss={val_loss:.6f}, "
                 f"lr={current_lr:.6f}, time={time.time() - epoch_start_time:.2f}s"
             )
