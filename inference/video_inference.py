@@ -200,9 +200,9 @@ def main():
     input_video = "../inference_data/test.mp4"
     output_video = "../inference_data/processed_video.mp4"
 
-    RED_DOT_SIZE = 7
+    RED_DOT_SIZE = 10
     FRAMES_PER_SEGMENT = 150
-    DETECTION_THRESHOLD = 0.4
+    DETECTION_THRESHOLD = 0.3
 
     print("=" * 60)
     print("Badminton Shuttlecock Detection & Tracking System")
