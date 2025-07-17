@@ -6,9 +6,9 @@ Automatically scans match folders for inputs and heatmaps subdirectories, matche
 corresponding image sequences, and displays heatmaps transparently overlaid on original images.
 
 Usage Examples:
-    python dataset_player.py --source /path/to/match1     # Basic: default FPS and alpha
-    python dataset_player.py --source /path/to/match1 --fps 15     # Custom playback rate
-    python dataset_player.py --source /path/to/match1 --alpha 0.4     # Custom transparency
+    python data_visualizer.py --source /path/to/match1     # Basic: default FPS and alpha
+    python data_visualizer.py --source /path/to/match1 --fps 15     # Custom playback rate
+    python data_visualizer.py --source /path/to/match1 --alpha 0.4     # Custom transparency
 
 Dependencies:
     pip install opencv-python numpy

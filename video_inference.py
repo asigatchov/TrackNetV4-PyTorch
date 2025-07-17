@@ -137,7 +137,6 @@ class SegmentedVideoProcessor:
         if not out.isOpened():
             raise RuntimeError(f"Cannot create final video file: {final_output}")
 
-        print("🔗 Merging segments into final video...")
         with tqdm(total=len(segment_files), desc="🔗 Merging segments", unit="segments") as pbar:
             for segment_file in segment_files:
                 cap = cv2.VideoCapture(segment_file)
