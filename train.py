@@ -1,8 +1,8 @@
 """
-TrackNet Training Script - Optimized with Resume Functionality
+TrackNet Training Script - Fixed Resume Functionality
 
 This script trains a TrackNet model for badminton tracking using PyTorch.
-Supports custom configurations and checkpoint resuming for interrupted training.
+Supports custom configurations and proper checkpoint resuming for interrupted training.
 
 Usage Examples:
 1. Basic training with default settings:
@@ -64,9 +64,9 @@ from preprocessing.tracknet_dataset import FrameHeatmapDataset
 
 
 def parse_arguments():
-    """Parse command line arguments"""
+    """Parse command line arguments with smart defaults"""
     parser = argparse.ArgumentParser(
-        description="TrackNet Training Script with Resume Functionality",
+        description="TrackNet Training Script with Fixed Resume Functionality",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -128,6 +128,15 @@ Examples:
                         help='Name for this experiment (default: tracknet_experiment)')
 
     args = parser.parse_args()
+
+    # Store default values for comparison
+    args._defaults = {
+        'split': 0.8, 'seed': 26, 'batch': 3, 'epochs': 30, 'workers': 0, 'device': 'auto',
+        'optimizer': 'Adadelta', 'lr': 1.0, 'wd': 0, 'scheduler': 'ReduceLROnPlateau',
+        'factor': 0.5, 'patience': 3, 'min_lr': 1e-6, 'plot': 10,
+        'out': 'training_outputs', 'name': 'tracknet_experiment'
+    }
+
     return args
 
 
@@ -177,14 +186,14 @@ class TrainingMonitor:
 
         # Training history
         self.batch_losses = []  # Batch losses
-        self.batch_steps = []  # Batch steps
+        self.batch_steps = []  # Batch steps (global counter)
         self.batch_lrs = []  # Batch learning rates
 
         self.epoch_train_losses = []  # Epoch training losses
         self.epoch_val_losses = []  # Epoch validation losses
         self.epoch_steps = []  # Epoch corresponding batch steps
 
-        self.current_batch = 0
+        self.global_batch_count = 0  # Global batch counter across all epochs
 
         # Setup logging
         self.setup_logger()
@@ -201,9 +210,19 @@ class TrainingMonitor:
         )
         self.logger = logging.getLogger(__name__)
 
-    def load_history(self, checkpoint):
-        """Load training history from checkpoint"""
-        if 'training_history' in checkpoint:
+    def load_history(self, checkpoint, reset_history=False):
+        """Load training history from checkpoint or reset for fresh start"""
+        if reset_history:
+            print("Resetting training history for fresh plotting...")
+            # Keep all lists empty for fresh start
+            self.batch_losses = []
+            self.batch_steps = []
+            self.batch_lrs = []
+            self.epoch_train_losses = []
+            self.epoch_val_losses = []
+            self.epoch_steps = []
+            self.global_batch_count = 0
+        elif 'training_history' in checkpoint:
             history = checkpoint['training_history']
             self.batch_losses = history.get('batch_losses', [])
             self.batch_steps = history.get('batch_steps', [])
@@ -211,7 +230,12 @@ class TrainingMonitor:
             self.epoch_train_losses = history.get('epoch_train_losses', [])
             self.epoch_val_losses = history.get('epoch_val_losses', [])
             self.epoch_steps = history.get('epoch_steps', [])
-            self.current_batch = history.get('current_batch', 0)
+            self.global_batch_count = history.get('global_batch_count', 0)
+
+    def reset_epoch_batch_count(self):
+        """Reset batch count for a new/restarted epoch"""
+        # Keep global history but reset for proper epoch restart
+        pass
 
     def get_history(self):
         """Get current training history for saving"""
@@ -222,27 +246,27 @@ class TrainingMonitor:
             'epoch_train_losses': self.epoch_train_losses,
             'epoch_val_losses': self.epoch_val_losses,
             'epoch_steps': self.epoch_steps,
-            'current_batch': self.current_batch
+            'global_batch_count': self.global_batch_count
         }
 
     def update_batch_loss(self, loss, lr):
         """Update batch loss for plotting"""
-        self.current_batch += 1
+        self.global_batch_count += 1
 
         # Record according to configured interval
-        if self.current_batch % self.args.plot == 0:
+        if self.global_batch_count % self.args.plot == 0:
             self.batch_losses.append(loss)
-            self.batch_steps.append(self.current_batch)
+            self.batch_steps.append(self.global_batch_count)
             self.batch_lrs.append(lr)
 
     def update_epoch_loss(self, train_loss, val_loss):
         """Update epoch losses"""
         self.epoch_train_losses.append(train_loss)
         self.epoch_val_losses.append(val_loss)
-        self.epoch_steps.append(self.current_batch)
+        self.epoch_steps.append(self.global_batch_count)
 
     def plot_training_curves(self, save_path):
-        """Plot training curves with English labels"""
+        """Plot training curves"""
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
 
         # Loss curves
@@ -286,8 +310,9 @@ class ModelCheckpoint:
         self.save_dir = save_dir
         self.best_loss = float('inf')
 
-    def save_checkpoint(self, model, optimizer, scheduler, epoch, metrics, training_history):
-        """Save checkpoint"""
+    def save_checkpoint(self, model, optimizer, scheduler, epoch, metrics, training_history, is_emergency=False,
+                        config=None):
+        """Save checkpoint with proper completion status"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
         checkpoint = {
@@ -297,16 +322,23 @@ class ModelCheckpoint:
             'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
             'metrics': metrics,
             'training_history': training_history,
-            'timestamp': timestamp
+            'timestamp': timestamp,
+            'is_emergency': is_emergency,  # Flag to indicate emergency save
+            'epoch_completed': not is_emergency,  # Whether the epoch was fully completed
+            'config': config  # Save current config for parameter merging
         }
 
-        # Save every epoch
-        filename = f"checkpoint_epoch_{epoch + 1}_{timestamp}.pth"
+        # Choose filename based on save type
+        if is_emergency:
+            filename = f"emergency_checkpoint_epoch_{epoch + 1}_{timestamp}.pth"
+        else:
+            filename = f"checkpoint_epoch_{epoch + 1}_{timestamp}.pth"
+
         filepath = self.save_dir / filename
         torch.save(checkpoint, filepath)
 
-        # If best model, save as best_model.pth
-        if metrics['val_loss'] < self.best_loss:
+        # If best model and not emergency, save as best_model.pth
+        if not is_emergency and metrics['val_loss'] < self.best_loss:
             self.best_loss = metrics['val_loss']
             best_path = self.save_dir / "best_model.pth"
             torch.save(checkpoint, best_path)
@@ -316,12 +348,13 @@ class ModelCheckpoint:
 
 
 class Trainer:
-    """Main trainer class"""
+    """Main trainer class with fixed resume logic"""
 
     def __init__(self, args):
         self.args = args
         self.start_epoch = 0
         self.resume_checkpoint = None
+        self.is_resuming_from_emergency = False
 
         # Setup device
         if args.device == 'auto':
@@ -345,30 +378,91 @@ class Trainer:
         self.monitor = TrainingMonitor(args, self.save_dir)
         self.checkpoint = ModelCheckpoint(self.save_dir / "checkpoints")
 
-        # Load training history if resuming
+        # Load training history if resuming (with fresh plotting option)
         if self.resume_checkpoint:
-            self.monitor.load_history(self.resume_checkpoint)
-            if 'metrics' in self.resume_checkpoint and 'val_loss' in self.resume_checkpoint['metrics']:
-                self.checkpoint.best_loss = self.resume_checkpoint['metrics']['val_loss']
+            # Reset history for fresh plotting in resumed training
+            self.monitor.load_history(self.resume_checkpoint, reset_history=True)
+            print("Training history reset for fresh plotting")
+
+            # Don't load best loss - start fresh tracking
+            print("Best model tracking reset for fresh evaluation")
 
         # Setup interrupt handling
         self.emergency_save = False
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
 
+    def merge_parameters_with_checkpoint(self):
+        """Merge parameters with smart priority: command_line > checkpoint > defaults"""
+        if not self.resume_checkpoint:
+            return
+
+        # Get saved config from checkpoint
+        checkpoint_config = self.resume_checkpoint.get('config', {})
+        if not checkpoint_config:
+            print("No config found in checkpoint, using command line + defaults")
+            return
+
+        print("Merging parameters with priority: command_line > checkpoint > defaults")
+
+        # Track what we're using from where
+        sources = {'command_line': [], 'checkpoint': [], 'defaults': []}
+
+        # Check each parameter
+        for param_name, default_value in self.args._defaults.items():
+            current_value = getattr(self.args, param_name)
+            checkpoint_value = checkpoint_config.get(param_name)
+
+            if current_value != default_value:
+                # User explicitly set this parameter
+                sources['command_line'].append(f"{param_name}={current_value}")
+            elif checkpoint_value is not None:
+                # Use checkpoint value
+                setattr(self.args, param_name, checkpoint_value)
+                sources['checkpoint'].append(f"{param_name}={checkpoint_value}")
+            else:
+                # Use default value (already set)
+                sources['defaults'].append(f"{param_name}={default_value}")
+
+        # Print parameter sources
+        if sources['command_line']:
+            print(f"From command line: {', '.join(sources['command_line'])}")
+        if sources['checkpoint']:
+            print(f"From checkpoint: {', '.join(sources['checkpoint'])}")
+        if sources['defaults']:
+            print(f"Using defaults: {', '.join(sources['defaults'])}")
+
     def load_checkpoint(self):
-        """Load checkpoint for resuming training"""
+        """Load checkpoint for resuming training with proper logic"""
         checkpoint_path = Path(self.args.resume)
         if not checkpoint_path.exists():
             raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
 
         print(f"Loading checkpoint from: {checkpoint_path}")
         self.resume_checkpoint = torch.load(checkpoint_path, map_location='cpu')
-        self.start_epoch = self.resume_checkpoint['epoch'] + 1
 
-        print(f"Resuming training from epoch {self.start_epoch}")
+        # Save current config to checkpoint for parameter merging
+        if 'config' not in self.resume_checkpoint:
+            self.resume_checkpoint['config'] = {}
 
-        print("Dataset path must be specified with --data for resuming training")
+        # Merge parameters with smart priority
+        self.merge_parameters_with_checkpoint()
+
+        # Check if this is an emergency checkpoint or completed epoch
+        is_emergency = self.resume_checkpoint.get('is_emergency', False)
+        epoch_completed = self.resume_checkpoint.get('epoch_completed', True)
+
+        if is_emergency or not epoch_completed:
+            # Emergency save or incomplete epoch - restart the same epoch
+            self.start_epoch = self.resume_checkpoint['epoch']
+            self.is_resuming_from_emergency = True
+            print(f"Resuming from incomplete epoch {self.start_epoch + 1} (emergency/incomplete save)")
+        else:
+            # Normal completed epoch - start from next epoch
+            self.start_epoch = self.resume_checkpoint['epoch'] + 1
+            self.is_resuming_from_emergency = False
+            print(
+                f"Resuming from completed epoch {self.resume_checkpoint['epoch'] + 1}, starting epoch {self.start_epoch + 1}")
 
     def signal_handler(self, signum, frame):
         """Handle interrupt signals"""
@@ -380,7 +474,10 @@ class Trainer:
         if self.args.resume:
             # For resumed training, create a new timestamped directory
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            experiment_name = f"{self.args.name}_resumed_{timestamp}"
+            if self.is_resuming_from_emergency:
+                experiment_name = f"{self.args.name}_resumed_emergency_fresh_{timestamp}"
+            else:
+                experiment_name = f"{self.args.name}_resumed_fresh_{timestamp}"
         else:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             experiment_name = f"{self.args.name}_{timestamp}"
@@ -404,7 +501,7 @@ class Trainer:
         dataset = FrameHeatmapDataset(self.args.data)
         print(f"Dataset size: {len(dataset)}")
 
-        # Set random seed
+        # Set random seed (use same seed for consistent split when resuming)
         torch.manual_seed(self.args.seed)
 
         # Split dataset
@@ -476,112 +573,119 @@ class Trainer:
         else:
             self.scheduler = None
 
-        # Load checkpoint states if resuming
+        # Load checkpoint states if resuming - SMART PARAMETER PRIORITY
         if self.resume_checkpoint:
             print("Loading model state from checkpoint...")
             self.model.load_state_dict(self.resume_checkpoint['model_state_dict'])
 
-            print("Loading optimizer state from checkpoint...")
-            self.optimizer.load_state_dict(self.resume_checkpoint['optimizer_state_dict'])
+            print("Loading optimizer with smart parameter merging...")
 
-            if self.scheduler and self.resume_checkpoint['scheduler_state_dict']:
-                print("Loading scheduler state from checkpoint...")
-                self.scheduler.load_state_dict(self.resume_checkpoint['scheduler_state_dict'])
+            # Get the checkpoint's optimizer state and current args
+            checkpoint_optimizer_state = self.resume_checkpoint['optimizer_state_dict']
 
-            print(f"Successfully resumed from epoch {self.start_epoch}")
+            # Load optimizer state but update hyperparameters based on current args
+            self.optimizer.load_state_dict(checkpoint_optimizer_state)
 
-    def train_epoch(self):
-        """Train one epoch"""
-        self.model.train()
-        total_loss = 0.0
-        batch_count = 0
+            # Update hyperparameters that may have been overridden by args merging
+            current_lr = self.args.lr
+            current_wd = self.args.wd
 
-        for inputs, targets in self.train_loader:
-            if self.emergency_save:
-                break
+            # Apply current args values to loaded optimizer
+            for param_group in self.optimizer.param_groups:
+                param_group['lr'] = current_lr
+                param_group['weight_decay'] = current_wd
 
-            inputs = inputs.to(self.device)
-            targets = targets.to(self.device)
+            # Print what was used
+            if 'param_groups' in checkpoint_optimizer_state and len(checkpoint_optimizer_state['param_groups']) > 0:
+                checkpoint_lr = checkpoint_optimizer_state['param_groups'][0].get('lr', 'unknown')
+                checkpoint_wd = checkpoint_optimizer_state['param_groups'][0].get('weight_decay', 'unknown')
+                print(f"Final learning rate: {current_lr} (checkpoint: {checkpoint_lr})")
+                print(f"Final weight decay: {current_wd} (checkpoint: {checkpoint_wd})")
 
-            # Forward pass
-            self.optimizer.zero_grad()
-            outputs = self.model(inputs)
-            loss = self.criterion(outputs, targets)
+            # Scheduler: Use current args parameters
+            if self.scheduler and self.args.scheduler != 'None':
+                if self.resume_checkpoint.get('scheduler_state_dict') and not any([
+                    getattr(self.args, 'factor') != self.args._defaults['factor'],
+                    getattr(self.args, 'patience') != self.args._defaults['patience'],
+                    getattr(self.args, 'min_lr') != self.args._defaults['min_lr']
+                ]):
+                    # Load scheduler state only if no scheduler params were overridden
+                    print("Loading scheduler state from checkpoint...")
+                    self.scheduler.load_state_dict(self.resume_checkpoint['scheduler_state_dict'])
+                else:
+                    print("Scheduler reset with new parameters from command line/defaults")
 
-            # Backward pass
-            loss.backward()
-            self.optimizer.step()
-
-            # Record loss
-            batch_loss = loss.item()
-            total_loss += batch_loss
-            batch_count += 1
-
-            # Update batch loss for plotting
-            current_lr = self.optimizer.param_groups[0]['lr']
-            self.monitor.update_batch_loss(batch_loss, current_lr)
-
-        avg_loss = total_loss / batch_count if batch_count > 0 else 0
-        return avg_loss
-
-    def validate(self):
-        """Validate model"""
-        self.model.eval()
-        total_loss = 0.0
-        batch_count = 0
-
-        with torch.no_grad():
-            for inputs, targets in self.val_loader:
-                if self.emergency_save:
-                    break
-
-                inputs = inputs.to(self.device)
-                targets = targets.to(self.device)
-
-                outputs = self.model(inputs)
-                loss = self.criterion(outputs, targets)
-
-                total_loss += loss.item()
-                batch_count += 1
-
-        avg_loss = total_loss / batch_count if batch_count > 0 else 0
-        return avg_loss
+            print(f"Successfully resumed from epoch {self.start_epoch + 1} with merged parameters")
 
     def emergency_checkpoint(self, epoch, train_loss, val_loss):
         """Emergency save checkpoint"""
-        # Create emergency save directory
-        emergency_dir = Path("emergency_saves") / datetime.now().strftime("%Y%m%d_%H%M%S")
-        emergency_dir.mkdir(parents=True, exist_ok=True)
+        print("Performing emergency save...")
 
-        # Save model
-        checkpoint_path = emergency_dir / f"emergency_checkpoint_epoch_{epoch + 1}.pth"
-        torch.save({
-            'epoch': epoch,
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'scheduler_state_dict': self.scheduler.state_dict() if self.scheduler else None,
+        # Save emergency checkpoint
+        metrics = {
             'train_loss': train_loss,
             'val_loss': val_loss,
-            'training_history': self.monitor.get_history()
-        }, checkpoint_path)
+            'learning_rate': self.optimizer.param_groups[0]['lr']
+        }
+
+        checkpoint_path, _ = self.checkpoint.save_checkpoint(
+            self.model, self.optimizer, self.scheduler, epoch, metrics,
+            self.monitor.get_history(), is_emergency=True, config=vars(self.args)
+        )
 
         # Save training curves
-        plot_path = emergency_dir / "training_curves.png"
+        plot_path = self.save_dir / "plots" / f"emergency_training_curves_epoch_{epoch + 1}.png"
         self.monitor.plot_training_curves(plot_path)
 
-        # Save configuration
-        config_path = emergency_dir / "config.json"
-        with open(config_path, 'w', encoding='utf-8') as f:
-            json.dump(vars(self.args), f, indent=4, ensure_ascii=False)
+        print(f"Emergency save completed: {checkpoint_path}")
 
-        print(f"Emergency save completed: {emergency_dir}")
+    def print_parameter_summary(self, is_emergency=False, current_epoch=None):
+        """Print final parameter summary"""
+        if is_emergency:
+            print("\n" + "=" * 50)
+            print("EMERGENCY SAVE PARAMETERS SUMMARY:")
+            print("=" * 50)
+            print(f"Dataset: {self.args.data}")
+            print(f"Interrupted at epoch: {current_epoch + 1}/{self.args.epochs}")
+            print(f"Batch size: {self.args.batch}")
+            print(f"Learning rate at interrupt: {self.optimizer.param_groups[0]['lr']:.6f}")
+            print(f"Weight decay: {self.optimizer.param_groups[0]['weight_decay']}")
+            print(f"Optimizer: {self.args.optimizer}")
+            print(f"Scheduler: {self.args.scheduler}")
+            print(f"Device: {self.device}")
+            print("=" * 50)
+            print(f"Emergency save location: {self.save_dir}")
+        else:
+            print("\n" + "=" * 50)
+            print("FINAL TRAINING PARAMETERS SUMMARY:")
+            print("=" * 50)
+            print(f"Dataset: {self.args.data}")
+            print(f"Total epochs completed: {self.args.epochs}")
+            print(f"Batch size: {self.args.batch}")
+            print(f"Final learning rate: {self.optimizer.param_groups[0]['lr']:.6f}")
+            print(f"Weight decay: {self.optimizer.param_groups[0]['weight_decay']}")
+            print(f"Optimizer: {self.args.optimizer}")
+            print(f"Scheduler: {self.args.scheduler}")
+            if self.args.scheduler != 'None':
+                print(f"  - Factor: {self.args.factor}")
+                print(f"  - Patience: {self.args.patience}")
+                print(f"  - Min LR: {self.args.min_lr}")
+            print(f"Device: {self.device}")
+            print(f"Data split: {self.args.split:.2f}")
+            print(f"Random seed: {self.args.seed}")
+            print("=" * 50)
+            print(f"All results saved to: {self.save_dir}")
 
     def train(self):
-        """Main training loop"""
+        """Main training loop with fixed resume logic"""
         print(f"Starting training...")
         print(f"Using device: {self.device}")
         if self.args.resume:
-            print(f"Resuming from epoch {self.start_epoch}")
+            if self.is_resuming_from_emergency:
+                print(f"Resuming from emergency save - restarting epoch {self.start_epoch + 1}")
+            else:
+                print(f"Resuming from completed epoch - starting epoch {self.start_epoch + 1}")
+            print("NOTE: All parameters use command line values. Training plots start fresh.")
         print("-" * 50)
 
         # Prepare data and model
@@ -598,14 +702,35 @@ class Trainer:
             # Show epoch progress
             print(f"\nEpoch [{epoch + 1}/{self.args.epochs}]")
 
-            # Training
+            # Training phase
             with tqdm(total=len(self.train_loader), desc="Training", ncols=80) as pbar:
                 self.model.train()
                 total_loss = 0.0
 
                 for batch_idx, (inputs, targets) in enumerate(self.train_loader):
                     if self.emergency_save:
-                        break
+                        # Perform emergency save with incomplete epoch data
+                        val_loss = self.validate() if total_loss > 0 else float('inf')
+                        train_loss = total_loss / (batch_idx + 1) if batch_idx > 0 else float('inf')
+
+                        metrics = {
+                            'train_loss': train_loss,
+                            'val_loss': val_loss,
+                            'learning_rate': self.optimizer.param_groups[0]['lr']
+                        }
+
+                        checkpoint_path, _ = self.checkpoint.save_checkpoint(
+                            self.model, self.optimizer, self.scheduler, epoch, metrics,
+                            self.monitor.get_history(), is_emergency=True, config=vars(self.args)
+                        )
+
+                        plot_path = self.save_dir / "plots" / f"emergency_training_curves_epoch_{epoch + 1}.png"
+                        self.monitor.plot_training_curves(plot_path)
+                        print(f"Emergency save completed: {checkpoint_path}")
+
+                        # Print parameter summary for emergency save
+                        self.print_parameter_summary(is_emergency=True, current_epoch=epoch)
+                        return
 
                     inputs = inputs.to(self.device)
                     targets = targets.to(self.device)
@@ -628,11 +753,48 @@ class Trainer:
 
                 train_loss = total_loss / len(self.train_loader)
 
-            # Validation
+            # Validation phase
+            if self.emergency_save:
+                metrics = {
+                    'train_loss': train_loss,
+                    'val_loss': float('inf'),
+                    'learning_rate': self.optimizer.param_groups[0]['lr']
+                }
+                checkpoint_path, _ = self.checkpoint.save_checkpoint(
+                    self.model, self.optimizer, self.scheduler, epoch, metrics,
+                    self.monitor.get_history(), is_emergency=True, config=vars(self.args)
+                )
+                plot_path = self.save_dir / "plots" / f"emergency_training_curves_epoch_{epoch + 1}.png"
+                self.monitor.plot_training_curves(plot_path)
+                print(f"Emergency save completed: {checkpoint_path}")
+
+                # Print parameter summary for emergency save
+                self.print_parameter_summary(is_emergency=True, current_epoch=epoch)
+                return
+
             with tqdm(total=len(self.val_loader), desc="Validation", ncols=80) as pbar:
                 val_loss = self.validate()
                 pbar.update(len(self.val_loader))
                 pbar.set_postfix({'loss': f'{val_loss:.6f}'})
+
+            # Check for emergency save after validation
+            if self.emergency_save:
+                metrics = {
+                    'train_loss': train_loss,
+                    'val_loss': val_loss,
+                    'learning_rate': self.optimizer.param_groups[0]['lr']
+                }
+                checkpoint_path, _ = self.checkpoint.save_checkpoint(
+                    self.model, self.optimizer, self.scheduler, epoch, metrics,
+                    self.monitor.get_history(), is_emergency=True, config=vars(self.args)
+                )
+                plot_path = self.save_dir / "plots" / f"emergency_training_curves_epoch_{epoch + 1}.png"
+                self.monitor.plot_training_curves(plot_path)
+                print(f"Emergency save completed: {checkpoint_path}")
+
+                # Print parameter summary for emergency save
+                self.print_parameter_summary(is_emergency=True, current_epoch=epoch)
+                return
 
             # Update epoch loss record
             self.monitor.update_epoch_loss(train_loss, val_loss)
@@ -647,7 +809,7 @@ class Trainer:
             if self.scheduler:
                 self.scheduler.step(val_loss)
 
-            # Save checkpoint
+            # Save checkpoint (normal save - epoch completed)
             metrics = {
                 'train_loss': train_loss,
                 'val_loss': val_loss,
@@ -655,7 +817,8 @@ class Trainer:
             }
 
             checkpoint_path, is_best = self.checkpoint.save_checkpoint(
-                self.model, self.optimizer, self.scheduler, epoch, metrics, self.monitor.get_history()
+                self.model, self.optimizer, self.scheduler, epoch, metrics,
+                self.monitor.get_history(), is_emergency=False, config=vars(self.args)
             )
 
             if is_best:
@@ -672,17 +835,49 @@ class Trainer:
                 f"lr={current_lr:.6f}, time={time.time() - epoch_start_time:.2f}s"
             )
 
-        # Handle interruption or normal completion
-        if self.emergency_save:
-            self.emergency_checkpoint(epoch, train_loss, val_loss)
-        else:
-            print("\nTraining completed!")
+        # Training completed normally
+        if not self.emergency_save:
+            print("\nTraining completed successfully!")
+
+            # Save final training curves
+            final_plot_path = self.save_dir / "plots" / "final_training_curves.png"
+            self.monitor.plot_training_curves(final_plot_path)
+
+            # Print final parameter summary
+            self.print_parameter_summary(is_emergency=False)
+
+        # Training completed normally
+        if not self.emergency_save:
+            print("\nTraining completed successfully!")
 
             # Save final training curves
             final_plot_path = self.save_dir / "plots" / "final_training_curves.png"
             self.monitor.plot_training_curves(final_plot_path)
 
             print(f"All results saved to: {self.save_dir}")
+
+    def validate(self):
+        """Validate model"""
+        self.model.eval()
+        total_loss = 0.0
+        batch_count = 0
+
+        with torch.no_grad():
+            for inputs, targets in self.val_loader:
+                if self.emergency_save:
+                    break
+
+                inputs = inputs.to(self.device)
+                targets = targets.to(self.device)
+
+                outputs = self.model(inputs)
+                loss = self.criterion(outputs, targets)
+
+                total_loss += loss.item()
+                batch_count += 1
+
+        avg_loss = total_loss / batch_count if batch_count > 0 else float('inf')
+        return avg_loss
 
 
 # ================== Main Program Entry ==================
