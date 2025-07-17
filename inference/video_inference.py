@@ -10,9 +10,10 @@ from model.tracknet import TrackNet as TrackNet
 
 
 class TrackNetPredictor:
-    def __init__(self, model_path):
+    def __init__(self, model_path, threshold=0.5):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = TrackNet().to(self.device)
+        self.threshold = threshold
 
         checkpoint = torch.load(model_path, map_location=self.device)
         state_dict = checkpoint.get('model_state_dict', checkpoint)
@@ -33,21 +34,20 @@ class TrackNetPredictor:
             output = self.model(input_tensor)
         return output.squeeze(0).cpu().numpy()
 
-    def detect_ball(self, heatmap, threshold=0.5):
-        if heatmap.max() < threshold:
+    def detect_ball(self, heatmap):
+        if heatmap.max() < self.threshold:
             return None
         max_pos = np.unravel_index(np.argmax(heatmap), heatmap.shape)
         return (max_pos[1], max_pos[0])
 
 
 class SegmentedVideoProcessor:
-    def __init__(self, model_path, dot_size=3, frames_per_segment=150):
-        self.predictor = TrackNetPredictor(model_path)
+    def __init__(self, model_path, dot_size=3, frames_per_segment=150, threshold=0.5):
+        self.predictor = TrackNetPredictor(model_path, threshold)
         self.dot_size = dot_size
         self.frames_per_segment = self._adjust_segment_size(frames_per_segment)
 
     def _adjust_segment_size(self, frames):
-        # Ensure segment size is divisible by 3 (for frame grouping)
         return frames - (frames % 3) if frames % 3 != 0 else frames
 
     def extract_video_info(self, video_path):
@@ -98,7 +98,7 @@ class SegmentedVideoProcessor:
         processed_frames = []
         ball_detected_count = 0
 
-        with tqdm(total=len(frame_groups), desc=f"🏸 Segment {segment_idx + 1}", unit="groups") as pbar:
+        with tqdm(total=len(frame_groups), desc=f"Segment {segment_idx + 1}", unit="groups") as pbar:
             for group in frame_groups:
                 heatmaps = self.predictor.predict(group)
 
@@ -113,7 +113,7 @@ class SegmentedVideoProcessor:
 
                 pbar.update(1)
 
-        print(f"✅ Ball detected in {ball_detected_count}/{len(processed_frames)} frames")
+        print(f"Ball detected in {ball_detected_count}/{len(processed_frames)} frames")
 
         return processed_frames, ball_detected_count
 
@@ -135,7 +135,7 @@ class SegmentedVideoProcessor:
         if not out.isOpened():
             raise RuntimeError(f"Cannot create final video file: {final_output}")
 
-        with tqdm(total=len(segment_files), desc="🔗 Merging segments", unit="segments") as pbar:
+        with tqdm(total=len(segment_files), desc="Merging segments", unit="segments") as pbar:
             for segment_file in segment_files:
                 cap = cv2.VideoCapture(segment_file)
                 while True:
@@ -147,7 +147,7 @@ class SegmentedVideoProcessor:
                 pbar.update(1)
 
         out.release()
-        print(f"✅ Final video saved: {final_output}")
+        print(f"Final video saved: {final_output}")
 
     def cleanup_segments(self, segment_files):
         for segment_file in segment_files:
@@ -155,54 +155,42 @@ class SegmentedVideoProcessor:
                 os.remove(segment_file)
 
     def process_video(self, video_path, output_path="processed_video.mp4"):
-        print("🏸 Starting segmented shuttlecock detection...")
-        print(f"🔴 Red dot size: {self.dot_size} pixels")
-        print(f"📊 Frames per segment: {self.frames_per_segment}")
+        print("Starting segmented shuttlecock detection...")
+        print(f"Red dot size: {self.dot_size} pixels")
+        print(f"Frames per segment: {self.frames_per_segment}")
+        print(f"Detection threshold: {self.predictor.threshold}")
 
-        # Extract video info
         original_size, fps, total_frames = self.extract_video_info(video_path)
-        print(f"✅ Video info: {total_frames} frames, {original_size[0]}x{original_size[1]}, {fps:.1f}FPS")
+        print(f"Video info: {total_frames} frames, {original_size[0]}x{original_size[1]}, {fps:.1f}FPS")
 
-        # Calculate segments
         num_segments = (total_frames + self.frames_per_segment - 1) // self.frames_per_segment
-        print(f"📦 Processing in {num_segments} segments")
+        print(f"Processing in {num_segments} segments")
 
         segment_files = []
         total_ball_detected = 0
         total_processed_frames = 0
 
-        # Process each segment
         for seg_idx in range(num_segments):
             start_frame = seg_idx * self.frames_per_segment
             frames_to_extract = min(self.frames_per_segment, total_frames - start_frame)
 
-            # Extract frames for current segment
             frames = self.extract_segment_frames(video_path, start_frame, frames_to_extract)
-
-            # Process segment with detailed progress
             processed_frames, ball_count = self.process_segment(frames, original_size, seg_idx)
 
-            # Save segment
             segment_output = f"temp_segment_{seg_idx:03d}.mp4"
             self.save_segment_video(processed_frames, segment_output, fps, original_size)
             segment_files.append(segment_output)
 
-            # Update statistics
             total_ball_detected += ball_count
             total_processed_frames += len(processed_frames)
 
-            # Clear memory
             del frames, processed_frames
 
-        # Merge all segments
         self.merge_segments(segment_files, output_path, fps, original_size)
-
-        # Cleanup temporary files
         self.cleanup_segments(segment_files)
 
-        # Display final statistics
         detection_rate = (total_ball_detected / total_processed_frames) * 100
-        print(f"🎯 Detection stats: {total_ball_detected}/{total_processed_frames} frames ({detection_rate:.1f}%)")
+        print(f"Detection stats: {total_ball_detected}/{total_processed_frames} frames ({detection_rate:.1f}%)")
 
         return output_path
 
@@ -212,42 +200,42 @@ def main():
     input_video = "../inference_data/test.mp4"
     output_video = "../inference_data/processed_video.mp4"
 
-    # Hard-coded red dot size parameter (pixels)
-    RED_DOT_SIZE = 7  # Adjustable: 1=tiny, 3=small, 5=medium, 8=large, 12=huge
-
-    # Hard-coded segment processing parameter (frames per segment)
-    FRAMES_PER_SEGMENT = 150  # Adjustable: 75=low memory, 150=balanced, 300=high efficiency, 450=large segments
+    RED_DOT_SIZE = 7
+    FRAMES_PER_SEGMENT = 150
+    DETECTION_THRESHOLD = 0.5
 
     print("=" * 60)
-    print("🏸 Badminton Shuttlecock Detection & Tracking System")
+    print("Badminton Shuttlecock Detection & Tracking System")
     print("=" * 60)
-    print(f"📂 Model file: {model_path}")
-    print(f"🎬 Input video: {input_video}")
-    print(f"💾 Output video: {output_video}")
-    print(f"🔴 Red dot size: {RED_DOT_SIZE} pixels")
-    print(f"📊 Frames per segment: {FRAMES_PER_SEGMENT}")
+    print(f"Model file: {model_path}")
+    print(f"Input video: {input_video}")
+    print(f"Output video: {output_video}")
+    print(f"Red dot size: {RED_DOT_SIZE} pixels")
+    print(f"Frames per segment: {FRAMES_PER_SEGMENT}")
+    print(f"Detection threshold: {DETECTION_THRESHOLD}")
     print("-" * 60)
 
     if not os.path.exists(input_video):
-        print(f"❌ Error: Input video file not found: {input_video}")
+        print(f"Error: Input video file not found: {input_video}")
         return
 
     if not os.path.exists(model_path):
-        print(f"❌ Error: Model file not found: {model_path}")
+        print(f"Error: Model file not found: {model_path}")
         return
 
     try:
         processor = SegmentedVideoProcessor(
             model_path,
             dot_size=RED_DOT_SIZE,
-            frames_per_segment=FRAMES_PER_SEGMENT
+            frames_per_segment=FRAMES_PER_SEGMENT,
+            threshold=DETECTION_THRESHOLD
         )
         output_path = processor.process_video(input_video, output_video)
         print("=" * 60)
-        print(f"🎉 Processing complete! Output video: {output_path}")
+        print(f"Processing complete! Output video: {output_path}")
         print("=" * 60)
     except Exception as e:
-        print(f"❌ Processing error: {str(e)}")
+        print(f"Processing error: {str(e)}")
 
 
 if __name__ == "__main__":
