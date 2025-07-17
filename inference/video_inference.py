@@ -98,8 +98,7 @@ class SegmentedVideoProcessor:
         processed_frames = []
         ball_detected_count = 0
 
-        print(f"🏸 Segment {segment_idx + 1}:")
-        with tqdm(total=len(frame_groups), desc="🏸 Detecting shuttlecock", unit="groups") as pbar:
+        with tqdm(total=len(frame_groups), desc=f"🏸 Segment {segment_idx + 1}", unit="groups") as pbar:
             for group in frame_groups:
                 heatmaps = self.predictor.predict(group)
 
@@ -114,8 +113,7 @@ class SegmentedVideoProcessor:
 
                 pbar.update(1)
 
-        print(
-            f"✅ Segment {segment_idx + 1} complete: ball detected in {ball_detected_count}/{len(processed_frames)} frames")
+        print(f"✅ Ball detected in {ball_detected_count}/{len(processed_frames)} frames")
 
         return processed_frames, ball_detected_count
 
