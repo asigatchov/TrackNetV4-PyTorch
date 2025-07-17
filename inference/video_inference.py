@@ -210,9 +210,9 @@ class SegmentedVideoProcessor:
 
 
 def main():
-    model_path = "best_model.pth"
-    input_video = "dataset_predict/test.mp4"
-    output_video = "dataset_predict/processed_video.mp4"
+    model_path = "../best_model.pth"
+    input_video = "../inference_data/test.mp4"
+    output_video = "../inference_data/processed_video.mp4"
 
     # Hard-coded red dot size parameter (pixels)
     RED_DOT_SIZE = 7  # Adjustable: 1=tiny, 3=small, 5=medium, 8=large, 12=huge

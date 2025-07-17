@@ -60,7 +60,7 @@ from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
 
 from tracknet_v4 import TrackNetV4 as TrackNet
-from dataset_preprocess.tracknet_dataset import FrameHeatmapDataset
+from preprocessing.tracknet_dataset import FrameHeatmapDataset
 
 
 def parse_arguments():
