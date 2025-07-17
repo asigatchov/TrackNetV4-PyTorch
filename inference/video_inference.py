@@ -202,7 +202,7 @@ def main():
 
     RED_DOT_SIZE = 7
     FRAMES_PER_SEGMENT = 150
-    DETECTION_THRESHOLD = 0.5
+    DETECTION_THRESHOLD = 0.4
 
     print("=" * 60)
     print("Badminton Shuttlecock Detection & Tracking System")
