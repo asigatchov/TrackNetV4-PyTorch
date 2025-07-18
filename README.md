@@ -1,4 +1,4 @@
-# TrackNetV4-PyTorch
+# TrackNetV4 PyTorch Implementation
 
 PyTorch implementation of **TrackNetV4: Enhancing Fast Sports Object Tracking with Motion Attention Maps** - a novel deep learning framework for high-speed shuttlecock and ball tracking in sports videos.
 
