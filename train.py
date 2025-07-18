@@ -47,14 +47,13 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import torch
-import torch.nn as nn
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
 
+from model.loss import WeightedBinaryCrossEntropy
 from model.tracknet import TrackNet
 from preprocessing.tracknet_dataset import FrameHeatmapDataset
-from model.loss import WeightedBinaryCrossEntropy
 
 
 def parse_args():
