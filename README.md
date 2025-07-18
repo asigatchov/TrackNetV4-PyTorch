@@ -1,129 +1,150 @@
 # TrackNetV4 PyTorch Implementation
 
-PyTorch implementation of **TrackNetV4: Enhancing Fast Sports Object Tracking with Motion Attention Maps** - a novel deep learning framework for high-speed shuttlecock and ball tracking in sports videos.
+PyTorch implementation of **TrackNetV4: Enhancing Fast Sports Object Tracking with Motion Attention Maps**.
 
 ## Quick Start
 
-### Installation
 ```bash
 git clone <repository-url>
-cd TrackNetV4-PyTorch
-pip install torch torchvision opencv-python pandas numpy scipy tqdm matplotlib
-```
+cd tracknet-v4-pytorch
+pip install -r requirements.txt
 
-### Basic Pipeline
-1. **Preprocess**: `python dataset_preprocessor.py --source dataset/raw --output dataset/preprocessed`
-2. **Train**: `python train.py --dataset_dir dataset/preprocessed --batch_size 4 --num_epochs 30`
-3. **Visualize**: `python dataset_player.py --source dataset/preprocessed/match1`
+# Preprocess dataset
+python preprocessing/video_to_heatmap.py --source dataset/raw --output dataset/preprocessed
+
+# Train model
+python train.py --data dataset/preprocessed --batch 4 --epochs 30
+
+# Run inference
+python inference/video_inference.py
+```
 
 ## Project Structure
+
 ```
-TrackNetV4-PyTorch/
-├── TrackNet.py                    # TrackNetV4 model with motion attention
-├── train.py                       # Training pipeline with WBCE loss
-├── dataset_preprocessor.py        # Video preprocessing pipeline
-├── dataset_frame_heatmap.py       # PyTorch dataset loader
-├── dataset_player.py              # Interactive visualization tool
-└── dataset/
-    ├── raw/                      # Original videos + CSV annotations
-    └── preprocessed/             # Processed frames + Gaussian heatmaps
+tracknet-v4-pytorch/
+├── model/
+│   ├── tracknet.py              # TrackNetV4 architecture
+│   └── loss.py                  # Weighted Binary Cross Entropy
+├── preprocessing/
+│   ├── video_to_heatmap.py      # Dataset preprocessing
+│   ├── tracknet_dataset.py      # PyTorch dataset loader
+│   └── data_visualizer.py       # Training data visualization
+├── inference/
+│   ├── single_frame_inference.py
+│   └── video_inference.py
+├── train.py                     # Training script
+└── requirements.txt
 ```
 
-## TrackNetV4 Architecture
+## Core Implementation
 
-### Core Innovation: Motion-Aware Fusion
+### Motion-Aware Fusion Architecture
 
-TrackNetV4 enhances traditional TrackNet by integrating **learnable motion attention maps** with high-level visual features, addressing the challenge of tracking fast-moving small objects in sports videos.
+TrackNetV4 integrates motion attention maps with visual features through a lightweight motion prompt layer.
 
-### Key Components
+**Motion Prompt Layer:**
 
-**1. Motion Prompt Layer**
-- Generates motion attention maps from frame differencing
-- Uses absolute frame differences to capture both positive and negative intensity changes
-- Applies Power Normalization with only 2 learnable parameters
+```python
+class MotionPrompt(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.a = nn.Parameter(torch.randn(1))  # slope
+        self.b = nn.Parameter(torch.randn(1))  # shift
 
-**2. Motion-Aware Fusion Mechanism**
-- Combines motion attention maps with visual features through element-wise multiplication
-- Preserves ball location and trajectory information
-- Fusion operation: `A ⊚ V = [V_t, A_t ⊙ V_(t+1), ..., A_(T-2) ⊙ V_(T-1)]`
+    def forward(self, x):
+        # Frame differencing: D_t = |F_{t+1} - F_t|
+        diffs = [gray[:, i + 1] - gray[:, i] for i in range(T - 1)]
+        D = torch.stack(diffs, dim=1)
 
-**3. MIMO Architecture**
-- **Input**: 3 consecutive RGB frames → 9 channels (288×512 resolution)
-- **Output**: 3 probability heatmaps → temporal consistency
-- **Encoder**: VGG16-style with batch normalization and skip connections
-- **Decoder**: Symmetric upsampling for pixel-level precision
+        # Motion attention: A = sigmoid(a * |D| + b)
+        A = torch.sigmoid(self.a * D.abs() + self.b)
+        return A
+```
 
-### Architecture Flow
+**Motion-Aware Fusion:**
 
-1. **Temporal Block Formation**: Group 3 consecutive video frames
-2. **Frame Differencing**: Compute absolute differences between adjacent frames
-3. **Motion Attention Generation**: Apply motion prompt layer to highlight moving regions
-4. **Visual Feature Extraction**: Extract high-level features using VGG16-based encoder
-5. **Motion-Aware Fusion**: Combine motion attention with visual features
-6. **Heatmap Generation**: Decode fused features to probability heatmaps
+```python
+def forward(self, vis, mot):
+    # Fuse: [V_t, A_t ⊙ V_{t+1}, A_{t+1} ⊙ V_{t+2}]
+    return torch.stack([vis[:, 0],
+                        mot[:, 0] * vis[:, 1],
+                        mot[:, 1] * vis[:, 2]], dim=1)
+```
 
-## Technical Principles
+**Network Architecture:**
 
-### Motion Attention Mechanism
-- **Frame Differencing**: `D_t = |F_(t+1) - F_t|` captures motion dynamics
-- **Attention Maps**: Highlight relevant motion regions while suppressing noise
-- **Temporal Modeling**: Preserves motion information across multiple frames
+- Input: 3 consecutive RGB frames (9 channels, 288×512)
+- Encoder: VGG16-style with skip connections
+- Decoder: Symmetric upsampling
+- Output: 3 probability heatmaps
 
 ### Weighted Binary Cross Entropy Loss
-- Addresses class imbalance in heatmap prediction
-- Weight `w = y_pred` emphasizes harder examples
-- Formula: `WBCE = -[(1-w)² × y_true × log(y_pred) + w² × (1-y_true) × log(1-y_pred)]`
 
-### Gaussian Heatmap Generation
-- Ground truth represented as 2D Gaussian distributions
-- Center at ball/shuttlecock position with configurable sigma
-- Smooth probability distribution for robust training
+```python
+def forward(self, y_pred, y_true):
+    w = y_pred
+    term1 = (1 - w) ** 2 * y_true * torch.log(y_pred)
+    term2 = w ** 2 * (1 - y_true) * torch.log(1 - y_pred)
+    return -(term1 + term2).mean()
+```
 
-## Data Format
+## Dataset Format
 
-### Input Dataset
+### Input Structure
+
 ```
 dataset/raw/match1/
-├── csv/rally1_ball.csv           # Frame,Visibility,X,Y annotations
-└── video/rally1.mp4              # Original match video
+├── csv/rally1_ball.csv          # Frame,Visibility,X,Y
+└── video/rally1.mp4
 ```
 
-### Processed Dataset
+### Processed Structure
+
 ```
 dataset/preprocessed/match1/
-├── inputs/rally1/                # 512×288 RGB frames
-└── heatmaps/rally1/              # Gaussian heatmaps (sigma=3.0)
+├── inputs/rally1/               # 512×288 RGB frames
+└── heatmaps/rally1/             # Gaussian heatmaps (sigma=3.0)
 ```
 
-## Performance Improvements
+## Training
 
-### Quantitative Results
-- **Tennis Ball Tracking**: +0.6% accuracy, +0.8% F1-score over TrackNetV2
-- **Shuttlecock Tracking**: +0.8% accuracy, +0.5% F1-score over TrackNetV2
-- **Processing Speed**: ~160 FPS with minimal computational overhead
+```bash
+# Basic training
+python train.py --data dataset/preprocessed
 
-### Key Advantages
-- **Lightweight**: Only 2 additional learnable parameters
-- **Plug-and-Play**: Compatible with existing TrackNet architectures
-- **Real-time**: Maintains high processing speed for live analysis
-- **Robust**: Better handling of occlusion and low visibility scenarios
+# Advanced options
+python train.py --data dataset/preprocessed --batch 8 --epochs 50 --lr 1.5 --optimizer Adam
 
-## Training Configuration
+# Resume training
+python train.py --resume checkpoints/best_model.pth --data dataset/preprocessed
+```
 
-### Model Specifications
-- **Parameters**: ~15M (base TrackNet) + 2 (motion prompt layer)
-- **Memory Usage**: ~2GB GPU memory (batch size 8)
-- **Optimal Settings**: Adadelta optimizer, ReduceLROnPlateau scheduler
-- **Default Epochs**: 30 with early stopping
+## Inference
 
-### Evaluation Metrics
-- **Accuracy**: Correct predictions within 4-pixel tolerance
-- **Precision/Recall/F1**: Standard classification metrics
-- **Processing Speed**: Frames per second (FPS)
+### Single Frame
 
-## Interactive Visualization
+```bash
+python inference/single_frame_inference.py
+```
 
-The dataset player provides real-time visualization of training data with heatmap overlays, supporting various controls for sequence navigation, transparency adjustment, and frame-by-frame analysis.
+### Video Processing
+
+```bash
+python inference/video_inference.py
+```
+
+### Visualization
+
+```bash
+python preprocessing/data_visualizer.py --source dataset/preprocessed/match1
+```
+
+## Dependencies
+
+```bash
+pip install torch torchvision opencv-python pandas numpy scipy tqdm matplotlib
+```
 
 ## Citation
 
@@ -135,7 +156,3 @@ The dataset player provides real-time visualization of training data with heatma
     year={2024}
 }
 ```
-
-## License
-
-Open source implementation for academic and research purposes.
