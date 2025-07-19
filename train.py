@@ -188,9 +188,43 @@ class Trainer:
 
         if hasattr(self, 'checkpoint'):
             self.model.load_state_dict(self.checkpoint['model_state_dict'])
-            self.optimizer.load_state_dict(self.checkpoint['optimizer_state_dict'])
+
+            optimizer_loaded = False
+            try:
+                checkpoint_optimizer_state = self.checkpoint['optimizer_state_dict']
+                if len(checkpoint_optimizer_state['state']) > 0:
+                    first_param_state = next(iter(checkpoint_optimizer_state['state'].values()))
+                    required_keys = set(self.optimizer.state_dict()['param_groups'][0].keys())
+                    checkpoint_keys = set(checkpoint_optimizer_state['param_groups'][0].keys())
+
+                    if required_keys != checkpoint_keys:
+                        raise ValueError("Optimizer parameter groups incompatible")
+
+                self.optimizer.load_state_dict(checkpoint_optimizer_state)
+
+                dummy_params = torch.randn(1, requires_grad=True, device=self.device)
+                dummy_optimizer = type(self.optimizer)([dummy_params], **self.optimizer.param_groups[0])
+                dummy_optimizer.load_state_dict(checkpoint_optimizer_state)
+                dummy_optimizer.step()
+
+                optimizer_loaded = True
+                print("Optimizer state loaded from checkpoint")
+            except (KeyError, ValueError, RuntimeError, TypeError) as e:
+                print(f"Warning: Optimizer state incompatible, using fresh state")
+                optimizer_loaded = False
+
+            if not optimizer_loaded and 'learning_rate' in self.checkpoint:
+                for param_group in self.optimizer.param_groups:
+                    param_group['lr'] = self.checkpoint['learning_rate']
+                print(f"Applied checkpoint learning rate: {self.checkpoint['learning_rate']}")
+
             if self.scheduler and self.checkpoint.get('scheduler_state_dict'):
-                self.scheduler.load_state_dict(self.checkpoint['scheduler_state_dict'])
+                try:
+                    self.scheduler.load_state_dict(self.checkpoint['scheduler_state_dict'])
+                    print("Scheduler state loaded from checkpoint")
+                except (KeyError, ValueError, RuntimeError):
+                    print("Warning: Scheduler state incompatible, using fresh state")
+
             print("Model state loaded from checkpoint")
 
     def save_checkpoint(self, epoch, train_loss, val_loss, is_emergency=False):
