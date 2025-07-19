@@ -1,46 +1,32 @@
 """
-TrackNet Training Script - Streamlined Version with AdamW & Lion Support
+TrackNet Training Script
 
 Usage Examples:
-1. Basic training:
-   python train.py --data dataset/Professional_reorg_train
+python train.py --data dataset/train
+python train.py --data dataset/train --batch 8 --epochs 50 --lr 0.001
+python train.py --data dataset/train --optimizer Lion --lr 0.0003 --batch 16
+python train.py --resume best.pth --data dataset/train --lr 0.0001
+python train.py --resume checkpoint.pth --data dataset/train --optimizer Lion --epochs 100
 
-2. Custom training with AdamW:
-   python train.py --data dataset/train --batch 8 --epochs 50 --lr 0.001 --optimizer AdamW --device cuda
-
-3. Training with Lion optimizer:
-   python train.py --data dataset/train --batch 4 --epochs 100 --lr 0.0003 --optimizer Lion --device cuda
-
-4. Advanced training with Lion:
-   python train.py --data dataset/train --batch 4 --epochs 100 --lr 0.0003 --optimizer Lion --split 0.9 --out outputs --name lion_exp --plot 5 --patience 5
-
-5. Resume training:
-   python train.py --resume checkpoints/best_model.pth --data dataset/train
-
-Parameter Functions:
-- data: Path to training dataset directory (required)
-- resume: Path to checkpoint file for resuming training (optional)
-- split: Proportion of data for training (default: 0.8)
-- seed: Random seed for data splitting (default: 26)
-- batch: Number of samples per training batch (default: 3)
-- epochs: Total training epochs (default: 30)
-- workers: Number of data loading workers (default: 0)
-- device: Computing device - auto/cpu/cuda/mps (default: auto)
-- optimizer: Optimizer type - Adadelta/Adam/AdamW/Lion/SGD (default: Adadelta)
-- lr: Initial learning rate for optimizer (default: 1.0 for Adadelta, 0.001 for Adam/AdamW, 0.0003 for Lion)
-- wd: Weight decay for optimizer (default: 0)
-- scheduler: Learning rate scheduler type (default: ReduceLROnPlateau)
-- factor: Factor by which LR is reduced (default: 0.5)
-- patience: Epochs to wait before reducing LR (default: 3)
-- min_lr: Minimum learning rate (default: 1e-6)
-- plot: Interval for recording batch losses (default: 10)
-- out: Directory to save training outputs (default: training_outputs)
-- name: Name prefix for experiment files (default: tracknet_experiment)
-
-Note:
-- Requires lion-pytorch for Lion optimizer: pip install lion-pytorch
-- Optimizer states are NOT saved/loaded - always uses fresh optimizer when resuming
-- Only model weights, learning rate, and training history are preserved in checkpoints
+Parameters:
+--data: Training dataset path (required)
+--resume: Checkpoint path for resuming
+--split: Train/val split ratio (default: 0.8)
+--seed: Random seed (default: 26)
+--batch: Batch size (default: 3)
+--epochs: Training epochs (default: 30)
+--workers: Data loader workers (default: 0)
+--device: Device auto/cpu/cuda/mps (default: auto)
+--optimizer: Adadelta/Adam/AdamW/Lion/SGD (default: AdamW)
+--lr: Learning rate (default: auto per optimizer)
+--wd: Weight decay (default: 0)
+--scheduler: ReduceLROnPlateau/None (default: ReduceLROnPlateau)
+--factor: LR reduction factor (default: 0.5)
+--patience: LR reduction patience (default: 3)
+--min_lr: Minimum learning rate (default: 1e-6)
+--plot: Loss plot interval (default: 10)
+--out: Output directory (default: outputs)
+--name: Experiment name (default: exp)
 """
 
 import argparse
@@ -49,63 +35,45 @@ import signal
 import time
 from datetime import datetime
 from pathlib import Path
-
 import matplotlib.pyplot as plt
 import torch
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
-
+from lion_pytorch import Lion
 from model.loss import WeightedBinaryCrossEntropy
 from model.tracknet import TrackNet
 from preprocessing.tracknet_dataset import FrameHeatmapDataset
 
-# Import Lion optimizer
-from lion_pytorch import Lion
-
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="TrackNet Training Script - Streamlined with AdamW & Lion")
-
-    parser.add_argument('--data', type=str, required=True, help='Path to training dataset directory')
-    parser.add_argument('--resume', type=str, help='Path to checkpoint file for resuming training')
-    parser.add_argument('--split', type=float, default=0.8, help='Ratio of training data (default: 0.8)')
-    parser.add_argument('--seed', type=int, default=26, help='Random seed for data splitting (default: 26)')
-    parser.add_argument('--batch', type=int, default=3, help='Batch size for training (default: 3)')
-    parser.add_argument('--epochs', type=int, default=30, help='Number of training epochs (default: 30)')
-    parser.add_argument('--workers', type=int, default=0, help='Number of data loading workers (default: 0)')
-    parser.add_argument('--device', type=str, default='auto', help='Device: auto/cpu/cuda/mps (default: auto)')
-
-    # Optimizer choices
-    parser.add_argument('--optimizer', type=str, default='Adadelta',
-                        choices=['Adadelta', 'Adam', 'AdamW', 'Lion', 'SGD'],
-                        help='Optimizer type (default: Adadelta)')
-    parser.add_argument('--lr', type=float, default=None,
-                        help='Learning rate (auto-set based on optimizer if not specified)')
-    parser.add_argument('--wd', type=float, default=0, help='Weight decay (default: 0)')
-    parser.add_argument('--scheduler', type=str, default='ReduceLROnPlateau', choices=['ReduceLROnPlateau', 'None'],
-                        help='LR scheduler (default: ReduceLROnPlateau)')
-    parser.add_argument('--factor', type=float, default=0.5, help='LR reduction factor (default: 0.5)')
-    parser.add_argument('--patience', type=int, default=3, help='LR reduction patience (default: 3)')
-    parser.add_argument('--min_lr', type=float, default=1e-6, help='Minimum learning rate (default: 1e-6)')
-    parser.add_argument('--plot', type=int, default=10, help='Batch loss recording interval (default: 10)')
-    parser.add_argument('--out', type=str, default='training_outputs',
-                        help='Output directory (default: training_outputs)')
-    parser.add_argument('--name', type=str, default='tracknet_experiment',
-                        help='Experiment name (default: tracknet_experiment)')
+    parser = argparse.ArgumentParser(description="TrackNet Training")
+    parser.add_argument('--data', type=str, required=True)
+    parser.add_argument('--resume', type=str)
+    parser.add_argument('--split', type=float, default=0.8)
+    parser.add_argument('--seed', type=int, default=26)
+    parser.add_argument('--batch', type=int, default=3)
+    parser.add_argument('--epochs', type=int, default=30)
+    parser.add_argument('--workers', type=int, default=0)
+    parser.add_argument('--device', type=str, default='auto')
+    parser.add_argument('--optimizer', type=str, default='AdamW',
+                        choices=['Adadelta', 'Adam', 'AdamW', 'Lion', 'SGD'])
+    parser.add_argument('--lr', type=float)
+    parser.add_argument('--wd', type=float, default=0)
+    parser.add_argument('--scheduler', type=str, default='ReduceLROnPlateau',
+                        choices=['ReduceLROnPlateau', 'None'])
+    parser.add_argument('--factor', type=float, default=0.5)
+    parser.add_argument('--patience', type=int, default=3)
+    parser.add_argument('--min_lr', type=float, default=1e-6)
+    parser.add_argument('--plot', type=int, default=10)
+    parser.add_argument('--out', type=str, default='outputs')
+    parser.add_argument('--name', type=str, default='exp')
 
     args = parser.parse_args()
 
-    # Auto-set learning rate based on optimizer if not specified
     if args.lr is None:
-        if args.optimizer == 'Adadelta':
-            args.lr = 1.0
-        elif args.optimizer in ['Adam', 'AdamW']:
-            args.lr = 0.001
-        elif args.optimizer == 'Lion':
-            args.lr = 0.0003  # Lion typically needs 3-10x smaller LR than Adam
-        elif args.optimizer == 'SGD':
-            args.lr = 0.01
+        lr_defaults = {'Adadelta': 1.0, 'Adam': 0.001, 'AdamW': 0.001, 'Lion': 0.0003, 'SGD': 0.01}
+        args.lr = lr_defaults[args.optimizer]
 
     return args
 
@@ -116,22 +84,15 @@ class Trainer:
         self.start_epoch = 0
         self.interrupted = False
         self.best_loss = float('inf')
-
-        self.device = self._setup_device()
+        self.device = self._get_device()
         self._setup_dirs()
         self._load_checkpoint()
-
-        self.batch_losses = []
-        self.batch_steps = []
-        self.batch_lrs = []
-        self.epoch_train_losses = []
-        self.epoch_val_losses = []
+        self.losses = {'batch': [], 'steps': [], 'lrs': [], 'train': [], 'val': []}
         self.step = 0
+        signal.signal(signal.SIGINT, self._interrupt)
+        signal.signal(signal.SIGTERM, self._interrupt)
 
-        signal.signal(signal.SIGINT, self._signal_handler)
-        signal.signal(signal.SIGTERM, self._signal_handler)
-
-    def _setup_device(self):
+    def _get_device(self):
         if self.args.device == 'auto':
             if torch.backends.mps.is_available():
                 return torch.device('mps')
@@ -143,83 +104,53 @@ class Trainer:
 
     def _setup_dirs(self):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        if self.args.resume:
-            name = f"{self.args.name}_resumed_{timestamp}"
-        else:
-            name = f"{self.args.name}_{timestamp}"
-
-        self.save_dir = Path(self.args.out) / name
+        suffix = "_resumed" if self.args.resume else ""
+        self.save_dir = Path(self.args.out) / f"{self.args.name}{suffix}_{timestamp}"
         self.save_dir.mkdir(parents=True, exist_ok=True)
         (self.save_dir / "checkpoints").mkdir(exist_ok=True)
         (self.save_dir / "plots").mkdir(exist_ok=True)
-
         with open(self.save_dir / "config.json", 'w') as f:
             json.dump(vars(self.args), f, indent=2)
 
     def _load_checkpoint(self):
-        if not self.args.resume:
-            return
+        if not self.args.resume: return
+        path = Path(self.args.resume)
+        if not path.exists(): raise FileNotFoundError(f"Checkpoint not found: {path}")
+        self.checkpoint = torch.load(path, map_location='cpu')
+        self.start_epoch = self.checkpoint['epoch'] + (0 if self.checkpoint.get('is_emergency', False) else 1)
+        print(f"Resume from epoch {self.start_epoch + 1}")
 
-        checkpoint_path = Path(self.args.resume)
-        if not checkpoint_path.exists():
-            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
-
-        print(f"Loading checkpoint: {checkpoint_path}")
-        print("Note: Only model weights and training history will be loaded (optimizer will be fresh)")
-        self.checkpoint = torch.load(checkpoint_path, map_location='cpu')
-
-        if self.checkpoint.get('is_emergency', False):
-            self.start_epoch = self.checkpoint['epoch']
-            print(f"Resuming from incomplete epoch {self.start_epoch + 1}")
-        else:
-            self.start_epoch = self.checkpoint['epoch'] + 1
-            print(f"Resuming from epoch {self.start_epoch + 1}")
-
-    def _signal_handler(self, signum, frame):
-        print("\nInterrupt detected, saving...")
+    def _interrupt(self, signum, frame):
+        print("\nInterrupt detected")
         self.interrupted = True
 
     def setup_data(self):
         dataset = FrameHeatmapDataset(self.args.data)
         torch.manual_seed(self.args.seed)
-
         train_size = int(self.args.split * len(dataset))
-        val_size = len(dataset) - train_size
-        train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
-
-        self.train_loader = DataLoader(train_dataset, batch_size=self.args.batch, shuffle=True,
+        train_ds, val_ds = random_split(dataset, [train_size, len(dataset) - train_size])
+        self.train_loader = DataLoader(train_ds, batch_size=self.args.batch, shuffle=True,
                                        num_workers=self.args.workers, pin_memory=self.device.type == 'cuda')
-        self.val_loader = DataLoader(val_dataset, batch_size=self.args.batch, shuffle=False,
+        self.val_loader = DataLoader(val_ds, batch_size=self.args.batch, shuffle=False,
                                      num_workers=self.args.workers, pin_memory=self.device.type == 'cuda')
-
-        print(f"Dataset: {len(dataset)} | Train: {len(train_dataset)} | Val: {len(val_dataset)}")
+        print(f"Dataset: {len(dataset)} | Train: {len(train_ds)} | Val: {len(val_ds)}")
 
     def _create_optimizer(self):
-        """Create optimizer based on args"""
-        if self.args.optimizer == "Adadelta":
-            return torch.optim.Adadelta(self.model.parameters(), lr=self.args.lr, weight_decay=self.args.wd)
-        elif self.args.optimizer == "Adam":
-            return torch.optim.Adam(self.model.parameters(), lr=self.args.lr, weight_decay=self.args.wd)
-        elif self.args.optimizer == "AdamW":
-            return torch.optim.AdamW(self.model.parameters(), lr=self.args.lr, weight_decay=self.args.wd)
-        elif self.args.optimizer == "Lion":
-            # Lion typically needs larger weight decay (3-10x) compared to Adam/AdamW
-            lion_wd = self.args.wd if self.args.wd > 0 else 0.01  # Default weight decay for Lion
-            return Lion(self.model.parameters(), lr=self.args.lr, weight_decay=lion_wd)
-        else:  # SGD
-            return torch.optim.SGD(self.model.parameters(), lr=self.args.lr, weight_decay=self.args.wd, momentum=0.9)
+        optimizers = {
+            'Adadelta': lambda: torch.optim.Adadelta(self.model.parameters(), lr=self.args.lr,
+                                                     weight_decay=self.args.wd),
+            'Adam': lambda: torch.optim.Adam(self.model.parameters(), lr=self.args.lr, weight_decay=self.args.wd),
+            'AdamW': lambda: torch.optim.AdamW(self.model.parameters(), lr=self.args.lr, weight_decay=self.args.wd),
+            'Lion': lambda: Lion(self.model.parameters(), lr=self.args.lr, weight_decay=max(self.args.wd, 0.01)),
+            'SGD': lambda: torch.optim.SGD(self.model.parameters(), lr=self.args.lr, weight_decay=self.args.wd,
+                                           momentum=0.9)
+        }
+        return optimizers[self.args.optimizer]()
 
     def setup_model(self):
         self.model = TrackNet().to(self.device)
         self.criterion = WeightedBinaryCrossEntropy()
-
-        # Create optimizer
         self.optimizer = self._create_optimizer()
-
-        # Print optimizer info
-        print(f"Using {self.args.optimizer} optimizer with lr={self.args.lr}, weight_decay={self.args.wd}")
-        if self.args.optimizer == "Lion":
-            print("Note: Lion optimizer typically performs better with larger batch sizes (>=64)")
 
         if self.args.scheduler == "ReduceLROnPlateau":
             self.scheduler = ReduceLROnPlateau(self.optimizer, mode='min', factor=self.args.factor,
@@ -229,20 +160,12 @@ class Trainer:
 
         if hasattr(self, 'checkpoint'):
             self.model.load_state_dict(self.checkpoint['model_state_dict'])
-            print("Model state loaded from checkpoint")
+            print("Model loaded from checkpoint")
 
-            # Always use fresh optimizer (no state loading)
-            print("Using fresh optimizer state (optimizers are always reinitialized on resume)")
-
-            # Optionally apply learning rate from checkpoint
-            if 'learning_rate' in self.checkpoint:
-                for param_group in self.optimizer.param_groups:
-                    param_group['lr'] = self.checkpoint['learning_rate']
-                print(f"Applied checkpoint learning rate: {self.checkpoint['learning_rate']}")
+        print(f"Optimizer: {self.args.optimizer} | LR: {self.args.lr} | WD: {self.args.wd}")
 
     def save_checkpoint(self, epoch, train_loss, val_loss, is_emergency=False):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
         checkpoint = {
             'epoch': epoch,
             'model_state_dict': self.model.state_dict(),
@@ -250,74 +173,60 @@ class Trainer:
             'val_loss': val_loss,
             'learning_rate': self.optimizer.param_groups[0]['lr'],
             'is_emergency': is_emergency,
-            'history': {
-                'batch_losses': self.batch_losses,
-                'batch_steps': self.batch_steps,
-                'batch_lrs': self.batch_lrs,
-                'epoch_train_losses': self.epoch_train_losses,
-                'epoch_val_losses': self.epoch_val_losses,
-                'step': self.step
-            },
+            'history': self.losses.copy(),
+            'step': self.step,
             'timestamp': timestamp
         }
 
-        if is_emergency:
-            filename = f"emergency_epoch_{epoch + 1}_{timestamp}.pth"
-        else:
-            filename = f"checkpoint_epoch_{epoch + 1}_{timestamp}.pth"
-
+        prefix = "emergency_" if is_emergency else "checkpoint_"
+        filename = f"{prefix}epoch_{epoch + 1}_{timestamp}.pth"
         filepath = self.save_dir / "checkpoints" / filename
         torch.save(checkpoint, filepath)
 
         if not is_emergency and val_loss < self.best_loss:
             self.best_loss = val_loss
-            best_path = self.save_dir / "checkpoints" / "best_model.pth"
-            torch.save(checkpoint, best_path)
+            torch.save(checkpoint, self.save_dir / "checkpoints" / "best_model.pth")
             return filepath, True
-
         return filepath, False
 
     def plot_curves(self, epoch):
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
 
-        if self.batch_losses:
-            ax1.plot(self.batch_steps, self.batch_losses, 'b-', alpha=0.3, label=f'Batch Loss (every {self.args.plot})')
-        if self.epoch_train_losses:
-            epochs = list(range(1, len(self.epoch_train_losses) + 1))
-            ax1.plot(epochs, self.epoch_train_losses, 'bo-', label='Train Loss')
-            ax1.plot(epochs, self.epoch_val_losses, 'ro-', label='Val Loss')
+        if self.losses['batch']:
+            ax1.plot(self.losses['steps'], self.losses['batch'], 'b-', alpha=0.3, label='Batch Loss')
+        if self.losses['train']:
+            epochs = list(range(1, len(self.losses['train']) + 1))
+            ax1.plot(epochs, self.losses['train'], 'bo-', label='Train')
+            ax1.plot(epochs, self.losses['val'], 'ro-', label='Val')
 
         ax1.set_xlabel('Batch/Epoch')
         ax1.set_ylabel('Loss')
-        ax1.set_title(f'Training Progress - {self.args.optimizer} Optimizer')
+        ax1.set_title('Training Progress')
         ax1.legend()
         ax1.grid(True, alpha=0.3)
 
-        if self.batch_lrs:
-            ax2.plot(self.batch_steps, self.batch_lrs, 'g-')
+        if self.losses['lrs']:
+            ax2.plot(self.losses['steps'], self.losses['lrs'], 'g-')
             ax2.set_xlabel('Batch')
             ax2.set_ylabel('Learning Rate')
-            ax2.set_title('Learning Rate Schedule')
+            ax2.set_title('Learning Rate')
             ax2.set_yscale('log')
             ax2.grid(True, alpha=0.3)
 
         plt.tight_layout()
-        plt.savefig(self.save_dir / "plots" / f"training_epoch_{epoch + 1}.png", dpi=150, bbox_inches='tight')
+        plt.savefig(self.save_dir / "plots" / f"epoch_{epoch + 1}.png", dpi=150, bbox_inches='tight')
         plt.close()
 
     def validate(self):
         self.model.eval()
         total_loss = 0.0
-
         with torch.no_grad():
             for inputs, targets in self.val_loader:
-                if self.interrupted:
-                    break
+                if self.interrupted: break
                 inputs, targets = inputs.to(self.device), targets.to(self.device)
                 outputs = self.model(inputs)
                 loss = self.criterion(outputs, targets)
                 total_loss += loss.item()
-
         return total_loss / len(self.val_loader)
 
     def train(self):
@@ -326,8 +235,7 @@ class Trainer:
         self.setup_model()
 
         for epoch in range(self.start_epoch, self.args.epochs):
-            if self.interrupted:
-                break
+            if self.interrupted: break
 
             start_time = time.time()
             self.model.train()
@@ -337,13 +245,11 @@ class Trainer:
                 for batch_idx, (inputs, targets) in enumerate(self.train_loader):
                     if self.interrupted:
                         val_loss = self.validate()
-                        self.save_checkpoint(epoch, total_loss / (batch_idx + 1), val_loss, is_emergency=True)
+                        self.save_checkpoint(epoch, total_loss / (batch_idx + 1), val_loss, True)
                         self.plot_curves(epoch)
-                        print(f"Emergency save completed")
                         return
 
                     inputs, targets = inputs.to(self.device), targets.to(self.device)
-
                     self.optimizer.zero_grad()
                     outputs = self.model(inputs)
                     loss = self.criterion(outputs, targets)
@@ -356,44 +262,36 @@ class Trainer:
 
                     if self.step % self.args.plot == 0:
                         current_lr = self.optimizer.param_groups[0]['lr']
-                        self.batch_losses.append(batch_loss)
-                        self.batch_steps.append(self.step)
-                        self.batch_lrs.append(current_lr)
+                        self.losses['batch'].append(batch_loss)
+                        self.losses['steps'].append(self.step)
+                        self.losses['lrs'].append(current_lr)
 
                     pbar.update(1)
                     pbar.set_postfix({'loss': f'{batch_loss:.6f}'})
 
-            if self.interrupted:
-                val_loss = self.validate()
-                self.save_checkpoint(epoch, total_loss / len(self.train_loader), val_loss, is_emergency=True)
-                self.plot_curves(epoch)
-                print(f"Emergency save completed")
-                return
-
             train_loss = total_loss / len(self.train_loader)
             val_loss = self.validate()
 
-            self.epoch_train_losses.append(train_loss)
-            self.epoch_val_losses.append(val_loss)
+            self.losses['train'].append(train_loss)
+            self.losses['val'].append(val_loss)
 
             current_lr = self.optimizer.param_groups[0]['lr']
+            elapsed = time.time() - start_time
 
-            print(
-                f"Epoch [{epoch + 1}/{self.args.epochs}] Train: {train_loss:.6f} Val: {val_loss:.6f} LR: {current_lr:.6e} Time: {time.time() - start_time:.1f}s")
+            print(f"Epoch [{epoch + 1}/{self.args.epochs}] Train: {train_loss:.6f} Val: {val_loss:.6f} "
+                  f"LR: {current_lr:.6e} Time: {elapsed:.1f}s")
 
             if self.scheduler:
                 self.scheduler.step(val_loss)
 
-            checkpoint_path, is_best = self.save_checkpoint(epoch, train_loss, val_loss)
+            _, is_best = self.save_checkpoint(epoch, train_loss, val_loss)
             if is_best:
                 print(f"Best model saved! Val Loss: {val_loss:.6f}")
 
             self.plot_curves(epoch)
 
         if not self.interrupted:
-            print("Training completed successfully!")
-            final_plot = self.save_dir / "plots" / "final_training_curves.png"
-            plt.savefig(final_plot, dpi=150, bbox_inches='tight')
+            print("Training completed!")
             print(f"Results saved to: {self.save_dir}")
 
 
