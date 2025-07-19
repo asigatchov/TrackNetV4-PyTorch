@@ -1,21 +1,21 @@
 """
-TrackNet Training Script - Streamlined Version
+TrackNet Training Script - Streamlined Version with AdamW & Lion Support
 
 Usage Examples:
 1. Basic training:
    python train.py --data dataset/Professional_reorg_train
 
-2. Custom training:
-   python train.py --data dataset/train --batch 8 --epochs 50 --lr 2.0 --device cuda
+2. Custom training with AdamW:
+   python train.py --data dataset/train --batch 8 --epochs 50 --lr 0.001 --optimizer AdamW --device cuda
 
-3. Advanced training:
-   python train.py --data dataset/train --batch 4 --epochs 100 --lr 1.5 --split 0.9 --out outputs --name advanced_exp --plot 5 --patience 5
+3. Training with Lion optimizer:
+   python train.py --data dataset/train --batch 4 --epochs 100 --lr 0.0003 --optimizer Lion --device cuda
 
-4. Resume training:
+4. Advanced training with Lion:
+   python train.py --data dataset/train --batch 4 --epochs 100 --lr 0.0003 --optimizer Lion --split 0.9 --out outputs --name lion_exp --plot 5 --patience 5
+
+5. Resume training:
    python train.py --resume checkpoints/best_model.pth --data dataset/train
-
-5. Resume with modified settings:
-   python train.py --resume checkpoints/checkpoint_epoch_20.pth --data dataset/train --epochs 100 --device cuda
 
 Parameter Functions:
 - data: Path to training dataset directory (required)
@@ -26,8 +26,8 @@ Parameter Functions:
 - epochs: Total training epochs (default: 30)
 - workers: Number of data loading workers (default: 0)
 - device: Computing device - auto/cpu/cuda/mps (default: auto)
-- optimizer: Optimizer type - Adadelta/Adam/SGD (default: Adadelta)
-- lr: Initial learning rate for optimizer (default: 1.0)
+- optimizer: Optimizer type - Adadelta/Adam/AdamW/Lion/SGD (default: Adadelta)
+- lr: Initial learning rate for optimizer (default: 1.0 for Adadelta, 0.001 for Adam/AdamW, 0.0003 for Lion)
 - wd: Weight decay for optimizer (default: 0)
 - scheduler: Learning rate scheduler type (default: ReduceLROnPlateau)
 - factor: Factor by which LR is reduced (default: 0.5)
@@ -36,6 +36,11 @@ Parameter Functions:
 - plot: Interval for recording batch losses (default: 10)
 - out: Directory to save training outputs (default: training_outputs)
 - name: Name prefix for experiment files (default: tracknet_experiment)
+
+Note:
+- Requires lion-pytorch for Lion optimizer: pip install lion-pytorch
+- Optimizer states are NOT saved/loaded - always uses fresh optimizer when resuming
+- Only model weights, learning rate, and training history are preserved in checkpoints
 """
 
 import argparse
@@ -55,9 +60,12 @@ from model.loss import WeightedBinaryCrossEntropy
 from model.tracknet import TrackNet
 from preprocessing.tracknet_dataset import FrameHeatmapDataset
 
+# Import Lion optimizer
+from lion_pytorch import Lion
+
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="TrackNet Training Script - Streamlined")
+    parser = argparse.ArgumentParser(description="TrackNet Training Script - Streamlined with AdamW & Lion")
 
     parser.add_argument('--data', type=str, required=True, help='Path to training dataset directory')
     parser.add_argument('--resume', type=str, help='Path to checkpoint file for resuming training')
@@ -67,9 +75,13 @@ def parse_args():
     parser.add_argument('--epochs', type=int, default=30, help='Number of training epochs (default: 30)')
     parser.add_argument('--workers', type=int, default=0, help='Number of data loading workers (default: 0)')
     parser.add_argument('--device', type=str, default='auto', help='Device: auto/cpu/cuda/mps (default: auto)')
-    parser.add_argument('--optimizer', type=str, default='Adadelta', choices=['Adadelta', 'Adam', 'SGD'],
+
+    # Optimizer choices
+    parser.add_argument('--optimizer', type=str, default='Adadelta',
+                        choices=['Adadelta', 'Adam', 'AdamW', 'Lion', 'SGD'],
                         help='Optimizer type (default: Adadelta)')
-    parser.add_argument('--lr', type=float, default=1.0, help='Learning rate (default: 1.0)')
+    parser.add_argument('--lr', type=float, default=None,
+                        help='Learning rate (auto-set based on optimizer if not specified)')
     parser.add_argument('--wd', type=float, default=0, help='Weight decay (default: 0)')
     parser.add_argument('--scheduler', type=str, default='ReduceLROnPlateau', choices=['ReduceLROnPlateau', 'None'],
                         help='LR scheduler (default: ReduceLROnPlateau)')
@@ -82,7 +94,20 @@ def parse_args():
     parser.add_argument('--name', type=str, default='tracknet_experiment',
                         help='Experiment name (default: tracknet_experiment)')
 
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    # Auto-set learning rate based on optimizer if not specified
+    if args.lr is None:
+        if args.optimizer == 'Adadelta':
+            args.lr = 1.0
+        elif args.optimizer in ['Adam', 'AdamW']:
+            args.lr = 0.001
+        elif args.optimizer == 'Lion':
+            args.lr = 0.0003  # Lion typically needs 3-10x smaller LR than Adam
+        elif args.optimizer == 'SGD':
+            args.lr = 0.01
+
+    return args
 
 
 class Trainer:
@@ -140,6 +165,7 @@ class Trainer:
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
         print(f"Loading checkpoint: {checkpoint_path}")
+        print("Note: Only model weights and training history will be loaded (optimizer will be fresh)")
         self.checkpoint = torch.load(checkpoint_path, map_location='cpu')
 
         if self.checkpoint.get('is_emergency', False):
@@ -168,17 +194,32 @@ class Trainer:
 
         print(f"Dataset: {len(dataset)} | Train: {len(train_dataset)} | Val: {len(val_dataset)}")
 
+    def _create_optimizer(self):
+        """Create optimizer based on args"""
+        if self.args.optimizer == "Adadelta":
+            return torch.optim.Adadelta(self.model.parameters(), lr=self.args.lr, weight_decay=self.args.wd)
+        elif self.args.optimizer == "Adam":
+            return torch.optim.Adam(self.model.parameters(), lr=self.args.lr, weight_decay=self.args.wd)
+        elif self.args.optimizer == "AdamW":
+            return torch.optim.AdamW(self.model.parameters(), lr=self.args.lr, weight_decay=self.args.wd)
+        elif self.args.optimizer == "Lion":
+            # Lion typically needs larger weight decay (3-10x) compared to Adam/AdamW
+            lion_wd = self.args.wd if self.args.wd > 0 else 0.01  # Default weight decay for Lion
+            return Lion(self.model.parameters(), lr=self.args.lr, weight_decay=lion_wd)
+        else:  # SGD
+            return torch.optim.SGD(self.model.parameters(), lr=self.args.lr, weight_decay=self.args.wd, momentum=0.9)
+
     def setup_model(self):
         self.model = TrackNet().to(self.device)
         self.criterion = WeightedBinaryCrossEntropy()
 
-        if self.args.optimizer == "Adadelta":
-            self.optimizer = torch.optim.Adadelta(self.model.parameters(), lr=self.args.lr, weight_decay=self.args.wd)
-        elif self.args.optimizer == "Adam":
-            self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.args.lr, weight_decay=self.args.wd)
-        else:
-            self.optimizer = torch.optim.SGD(self.model.parameters(), lr=self.args.lr, weight_decay=self.args.wd,
-                                             momentum=0.9)
+        # Create optimizer
+        self.optimizer = self._create_optimizer()
+
+        # Print optimizer info
+        print(f"Using {self.args.optimizer} optimizer with lr={self.args.lr}, weight_decay={self.args.wd}")
+        if self.args.optimizer == "Lion":
+            print("Note: Lion optimizer typically performs better with larger batch sizes (>=64)")
 
         if self.args.scheduler == "ReduceLROnPlateau":
             self.scheduler = ReduceLROnPlateau(self.optimizer, mode='min', factor=self.args.factor,
@@ -188,44 +229,16 @@ class Trainer:
 
         if hasattr(self, 'checkpoint'):
             self.model.load_state_dict(self.checkpoint['model_state_dict'])
+            print("Model state loaded from checkpoint")
 
-            optimizer_loaded = False
-            try:
-                checkpoint_optimizer_state = self.checkpoint['optimizer_state_dict']
-                if len(checkpoint_optimizer_state['state']) > 0:
-                    first_param_state = next(iter(checkpoint_optimizer_state['state'].values()))
-                    required_keys = set(self.optimizer.state_dict()['param_groups'][0].keys())
-                    checkpoint_keys = set(checkpoint_optimizer_state['param_groups'][0].keys())
+            # Always use fresh optimizer (no state loading)
+            print("Using fresh optimizer state (optimizers are always reinitialized on resume)")
 
-                    if required_keys != checkpoint_keys:
-                        raise ValueError("Optimizer parameter groups incompatible")
-
-                self.optimizer.load_state_dict(checkpoint_optimizer_state)
-
-                dummy_params = torch.randn(1, requires_grad=True, device=self.device)
-                dummy_optimizer = type(self.optimizer)([dummy_params], **self.optimizer.param_groups[0])
-                dummy_optimizer.load_state_dict(checkpoint_optimizer_state)
-                dummy_optimizer.step()
-
-                optimizer_loaded = True
-                print("Optimizer state loaded from checkpoint")
-            except (KeyError, ValueError, RuntimeError, TypeError) as e:
-                print(f"Warning: Optimizer state incompatible, using fresh state")
-                optimizer_loaded = False
-
-            if not optimizer_loaded and 'learning_rate' in self.checkpoint:
+            # Optionally apply learning rate from checkpoint
+            if 'learning_rate' in self.checkpoint:
                 for param_group in self.optimizer.param_groups:
                     param_group['lr'] = self.checkpoint['learning_rate']
                 print(f"Applied checkpoint learning rate: {self.checkpoint['learning_rate']}")
-
-            if self.scheduler and self.checkpoint.get('scheduler_state_dict'):
-                try:
-                    self.scheduler.load_state_dict(self.checkpoint['scheduler_state_dict'])
-                    print("Scheduler state loaded from checkpoint")
-                except (KeyError, ValueError, RuntimeError):
-                    print("Warning: Scheduler state incompatible, using fresh state")
-
-            print("Model state loaded from checkpoint")
 
     def save_checkpoint(self, epoch, train_loss, val_loss, is_emergency=False):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -233,8 +246,6 @@ class Trainer:
         checkpoint = {
             'epoch': epoch,
             'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'scheduler_state_dict': self.scheduler.state_dict() if self.scheduler else None,
             'train_loss': train_loss,
             'val_loss': val_loss,
             'learning_rate': self.optimizer.param_groups[0]['lr'],
@@ -278,7 +289,7 @@ class Trainer:
 
         ax1.set_xlabel('Batch/Epoch')
         ax1.set_ylabel('Loss')
-        ax1.set_title('Training Progress')
+        ax1.set_title(f'Training Progress - {self.args.optimizer} Optimizer')
         ax1.legend()
         ax1.grid(True, alpha=0.3)
 
