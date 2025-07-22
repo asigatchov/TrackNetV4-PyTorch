@@ -38,10 +38,6 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import seaborn as sns
-from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen import canvas
-from reportlab.lib.colors import blue, black, green, red
-from reportlab.lib.units import inch
 
 from model.tracknet import TrackNet
 from preprocessing.tracknet_dataset import FrameHeatmapDataset
@@ -88,6 +84,9 @@ class TrackNetTester:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.save_dir = Path(self.args.out) / f"test_{timestamp}"
         self.save_dir.mkdir(parents=True, exist_ok=True)
+
+        with open(self.save_dir / "test_config.json", 'w') as f:
+            json.dump(vars(self.args), f, indent=2)
 
     def _load_model(self):
         print("Loading model...")
@@ -204,99 +203,58 @@ class TrackNetTester:
         plt.savefig(self.save_dir / 'confusion_matrix.png', dpi=150, bbox_inches='tight')
         plt.close()
 
-        # PDF Report
-        self._generate_pdf_report(metrics)
-        print(f"\033[92m✓\033[0m Report saved to {self.save_dir}")
-
-    def _generate_pdf_report(self, metrics):
-        c = canvas.Canvas(str(self.save_dir / 'test_report.pdf'), pagesize=A4)
-        width, height = A4
-
-        # Header
-        c.setFont("Helvetica-Bold", 20)
-        c.setFillColor(blue)
-        c.drawCentredText(width / 2, height - 80, "TrackNet Test Results")
-
-        c.setStrokeColor(blue)
-        c.line(50, height - 100, width - 50, height - 100)
-
-        # Configuration
-        y = height - 140
-        c.setFont("Helvetica-Bold", 12)
-        c.setFillColor(black)
-        c.drawString(50, y, f"Test Dataset: {self.args.data}")
-        y -= 20
-        c.drawString(50, y, f"Model: {self.args.model}")
-        y -= 20
-        c.drawString(50, y, f"Device: {self.device}")
-        y -= 20
-        c.drawString(50, y, f"Detection Threshold: {self.args.threshold}")
-        y -= 20
-        c.drawString(50, y, f"Distance Tolerance: {self.args.tolerance} pixels")
-
-        # Separator
-        y -= 30
-        c.line(50, y, width - 50, y)
-
-        # Confusion Matrix
-        y -= 40
-        c.setFont("Helvetica-Bold", 14)
-        c.drawString(50, y, "Confusion Matrix:")
-
-        y -= 25
-        c.setFont("Helvetica", 11)
-        c.setFillColor(green)
-        c.drawString(70, y, f"True Positives (TP): {self.results['tp']}")
-        y -= 20
-        c.setFillColor(black)
-        c.drawString(70, y, f"True Negatives (TN): {self.results['tn']}")
-        y -= 20
-        c.setFillColor(red)
-        c.drawString(70, y, f"False Positives (FP1 - wrong position): {self.results['fp1']}")
-        y -= 20
-        c.drawString(70, y, f"False Positives (FP2 - false detection): {self.results['fp2']}")
-        y -= 20
-        c.drawString(70, y, f"False Negatives (FN): {self.results['fn']}")
-
-        # Separator
-        y -= 30
-        c.setFillColor(black)
-        c.line(50, y, width - 50, y)
-
         # Performance Metrics
-        y -= 40
-        c.setFont("Helvetica-Bold", 14)
-        c.drawString(50, y, "Performance Metrics:")
+        fig, ax = plt.subplots(figsize=(10, 6))
+        metrics_names = ['Accuracy', 'Precision', 'Recall', 'F1-Score', 'Detection Rate']
+        metrics_values = [metrics['accuracy'], metrics['precision'], metrics['recall'],
+                          metrics['f1_score'], metrics['detection_rate']]
+        colors = ['#2E86AB', '#A23B72', '#F18F01', '#C73E1D', '#592E83']
+        bars = ax.bar(metrics_names, metrics_values, color=colors, alpha=0.8)
+        ax.set_ylim(0, 1)
+        ax.set_ylabel('Score')
+        ax.set_title('Performance Metrics')
 
-        y -= 25
-        c.setFont("Helvetica", 11)
-        c.drawString(70, y, f"Accuracy:       {metrics['accuracy']:.3f} ({metrics['accuracy'] * 100:.1f}%)")
-        y -= 20
-        c.drawString(70, y, f"Precision:      {metrics['precision']:.3f} ({metrics['precision'] * 100:.1f}%)")
-        y -= 20
-        c.drawString(70, y, f"Recall:         {metrics['recall']:.3f} ({metrics['recall'] * 100:.1f}%)")
-        y -= 20
-        c.drawString(70, y, f"F1-Score:       {metrics['f1_score']:.3f}")
-        y -= 20
-        c.drawString(70, y, f"Detection Rate: {metrics['detection_rate']:.3f} ({metrics['detection_rate'] * 100:.1f}%)")
+        for bar, value in zip(bars, metrics_values):
+            height = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width() / 2., height + 0.01, f'{value:.3f}',
+                    ha='center', va='bottom', fontweight='bold')
 
-        # Separator
-        y -= 30
-        c.line(50, y, width - 50, y)
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        plt.savefig(self.save_dir / 'performance_metrics.png', dpi=150, bbox_inches='tight')
+        plt.close()
 
-        # Total
-        y -= 30
-        c.setFont("Helvetica-Bold", 12)
-        c.drawString(50, y, f"Total Frames: {self.results['total_frames']}")
+        # Error Distribution
+        if self.distances:
+            fig, ax = plt.subplots(figsize=(10, 6))
+            ax.hist(self.distances, bins=30, alpha=0.7, color='skyblue', edgecolor='black')
+            ax.axvline(self.args.tolerance, color='red', linestyle='--', linewidth=2,
+                       label=f'Tolerance: {self.args.tolerance}px')
+            ax.set_xlabel('Prediction Error (pixels)')
+            ax.set_ylabel('Frequency')
+            ax.set_title('Prediction Error Distribution')
+            ax.legend()
+            plt.tight_layout()
+            plt.savefig(self.save_dir / 'error_distribution.png', dpi=150, bbox_inches='tight')
+            plt.close()
 
-        # Footer
-        c.setFont("Helvetica", 8)
-        c.setFillColor(black)
-        c.drawCentredText(width / 2, 30, f"Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"\033[92m✓\033[0m Visualizations saved to {self.save_dir}")
 
-        c.save()
+    def _save_results(self, metrics):
+        results_summary = {
+            'test_config': vars(self.args),
+            'confusion_matrix': {'tp': self.results['tp'], 'tn': self.results['tn'],
+                                 'fp1': self.results['fp1'], 'fp2': self.results['fp2'], 'fn': self.results['fn']},
+            'metrics': metrics,
+            'statistics': {'total_frames': self.results['total_frames'],
+                           'detected_frames': self.results['detected_frames'],
+                           'detection_rate': metrics['detection_rate']},
+            'timestamp': datetime.now().isoformat()
+        }
 
-    def _save_predictions(self):
+        with open(self.save_dir / "test_results.json", 'w') as f:
+            json.dump(results_summary, f, indent=2)
+
         if self.args.save_predictions:
             with open(self.save_dir / "predictions.json", 'w') as f:
                 json.dump(self.predictions, f, indent=2)
@@ -359,7 +317,7 @@ class TrackNetTester:
         print(f"Processing speed: {self.results['total_frames'] / test_time:.1f} FPS")
 
         self._generate_visualizations(metrics)
-        self._save_predictions()
+        self._save_results(metrics)
         self._print_results(metrics)
 
         return metrics
