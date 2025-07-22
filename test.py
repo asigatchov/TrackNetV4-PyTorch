@@ -28,7 +28,7 @@ Parameter Functions:
 
 # ==================== CONFIGURATION PARAMETERS ====================
 # Ball Detection Settings
-DETECTION_THRESHOLD = 0.2  # Minimum heatmap value to consider as ball detection
+DETECTION_THRESHOLD = 0.5  # Minimum heatmap value to consider as ball detection
 GROUND_TRUTH_THRESHOLD = 0.1  # Minimum heatmap value to consider as ground truth
 DISTANCE_TOLERANCE = 4  # Maximum pixel distance for correct prediction
 
