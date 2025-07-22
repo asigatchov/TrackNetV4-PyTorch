@@ -26,6 +26,23 @@ Parameter Functions:
 - save_predictions: Save prediction coordinates to file (default: False)
 """
 
+# ==================== CONFIGURATION PARAMETERS ====================
+# Ball Detection Settings
+DETECTION_THRESHOLD = 0.2  # Minimum heatmap value to consider as ball detection
+GROUND_TRUTH_THRESHOLD = 0.1  # Minimum heatmap value to consider as ground truth
+DISTANCE_TOLERANCE = 4  # Maximum pixel distance for correct prediction
+
+# Default Testing Parameters
+DEFAULT_BATCH_SIZE = 4  # Default batch size for testing
+DEFAULT_DEVICE = 'auto'  # Default computing device
+DEFAULT_OUTPUT_DIR = 'test_results'  # Default output directory
+DEFAULT_REPORT_LEVEL = 'detailed'  # Default report detail level
+
+# Visualization Settings
+FIGURE_DPI = 150  # Output image resolution
+REPORT_BACKGROUND_COLOR = '#f8f9fa'  # Background color for report
+# ====================================================================
+
 import argparse
 import json
 import time
@@ -47,13 +64,18 @@ def parse_args():
     parser = argparse.ArgumentParser(description="TrackNet Testing and Evaluation")
     parser.add_argument('--model', type=str, required=True, help='Path to trained model checkpoint')
     parser.add_argument('--data', type=str, required=True, help='Path to test dataset directory')
-    parser.add_argument('--batch', type=int, default=4, help='Batch size for testing (default: 4)')
-    parser.add_argument('--threshold', type=float, default=0.5, help='Detection threshold (default: 0.5)')
-    parser.add_argument('--tolerance', type=int, default=4, help='Distance tolerance in pixels (default: 4)')
-    parser.add_argument('--device', type=str, default='auto', help='Device: auto/cpu/cuda/mps (default: auto)')
-    parser.add_argument('--out', type=str, default='test_results', help='Output directory (default: test_results)')
-    parser.add_argument('--report', type=str, default='detailed', choices=['summary', 'detailed'],
-                        help='Report detail level (default: detailed)')
+    parser.add_argument('--batch', type=int, default=DEFAULT_BATCH_SIZE,
+                        help=f'Batch size for testing (default: {DEFAULT_BATCH_SIZE})')
+    parser.add_argument('--threshold', type=float, default=DETECTION_THRESHOLD,
+                        help=f'Detection threshold (default: {DETECTION_THRESHOLD})')
+    parser.add_argument('--tolerance', type=int, default=DISTANCE_TOLERANCE,
+                        help=f'Distance tolerance in pixels (default: {DISTANCE_TOLERANCE})')
+    parser.add_argument('--device', type=str, default=DEFAULT_DEVICE,
+                        help=f'Device: auto/cpu/cuda/mps (default: {DEFAULT_DEVICE})')
+    parser.add_argument('--out', type=str, default=DEFAULT_OUTPUT_DIR,
+                        help=f'Output directory (default: {DEFAULT_OUTPUT_DIR})')
+    parser.add_argument('--report', type=str, default=DEFAULT_REPORT_LEVEL, choices=['summary', 'detailed'],
+                        help=f'Report detail level (default: {DEFAULT_REPORT_LEVEL})')
     parser.add_argument('--save_predictions', action='store_true', help='Save prediction coordinates')
     return parser.parse_args()
 
@@ -66,9 +88,7 @@ class TrackNetTester:
         self._load_model()
 
         self.predictions = []
-        self.ground_truths = []
         self.results = {'tp': 0, 'tn': 0, 'fp1': 0, 'fp2': 0, 'fn': 0, 'total_frames': 0, 'detected_frames': 0}
-        self.distances = []
 
     def _setup_device(self):
         if self.args.device == 'auto':
@@ -113,7 +133,7 @@ class TrackNetTester:
         return (max_pos[1], max_pos[0])
 
     def _extract_ground_truth_coordinates(self, target_heatmap):
-        if target_heatmap.max() < 0.1:
+        if target_heatmap.max() < GROUND_TRUTH_THRESHOLD:
             return None
         max_pos = np.unravel_index(np.argmax(target_heatmap), target_heatmap.shape)
         return (max_pos[1], max_pos[0])
@@ -158,11 +178,8 @@ class TrackNetTester:
                 if pred_coord is not None:
                     self.results['detected_frames'] += 1
 
-                distance = self._calculate_distance(pred_coord, gt_coord)
-                if distance != float('inf'):
-                    self.distances.append(distance)
-
                 if self.args.save_predictions:
+                    distance = self._calculate_distance(pred_coord, gt_coord)
                     self.predictions.append({
                         'predicted': pred_coord, 'ground_truth': gt_coord,
                         'classification': classification, 'distance': distance if distance != float('inf') else None
@@ -189,8 +206,6 @@ class TrackNetTester:
     def _generate_visualizations(self, metrics):
         print("Generating visualizations...")
 
-        plt.style.use('default')
-
         # Confusion Matrix
         fig, ax = plt.subplots(figsize=(8, 6))
         cm_data = np.array([[self.results['tp'], self.results['fp1'] + self.results['fp2']],
@@ -200,61 +215,84 @@ class TrackNetTester:
                     yticklabels=['Actual Positive', 'Actual Negative'], ax=ax)
         plt.title('Confusion Matrix')
         plt.tight_layout()
-        plt.savefig(self.save_dir / 'confusion_matrix.png', dpi=150, bbox_inches='tight')
+        plt.savefig(self.save_dir / 'confusion_matrix.png', dpi=FIGURE_DPI, bbox_inches='tight')
         plt.close()
+
+        # Test Report Dashboard
+        fig = plt.figure(figsize=(14, 10))
+        fig.patch.set_facecolor(REPORT_BACKGROUND_COLOR)
+
+        # Header
+        fig.suptitle('TrackNet Test Results', fontsize=24, fontweight='bold', y=0.95, color='#2c3e50')
+
+        # Configuration Panel
+        ax1 = plt.subplot2grid((3, 4), (0, 0), colspan=2, rowspan=1)
+        ax1.axis('off')
+        config_text = f"""Dataset: {self.args.data}
+Model: {self.args.model}
+Device: {self.device}
+Threshold: {self.args.threshold} | Tolerance: {self.args.tolerance}px"""
+        ax1.text(0.05, 0.5, config_text, fontsize=12, verticalalignment='center',
+                 bbox=dict(boxstyle="round,pad=0.5", facecolor='#e8f4fd', alpha=0.8))
+
+        # Confusion Matrix Data
+        ax2 = plt.subplot2grid((3, 4), (0, 2), colspan=2, rowspan=1)
+        ax2.axis('off')
+        cm_text = f"""True Positives: {self.results['tp']:,}
+True Negatives: {self.results['tn']:,}
+False Positives (Wrong): {self.results['fp1']:,}
+False Positives (False): {self.results['fp2']:,}
+False Negatives: {self.results['fn']:,}"""
+        ax2.text(0.05, 0.5, cm_text, fontsize=12, verticalalignment='center',
+                 bbox=dict(boxstyle="round,pad=0.5", facecolor='#fff2e8', alpha=0.8))
 
         # Performance Metrics
-        fig, ax = plt.subplots(figsize=(10, 6))
-        metrics_names = ['Accuracy', 'Precision', 'Recall', 'F1-Score', 'Detection Rate']
-        metrics_values = [metrics['accuracy'], metrics['precision'], metrics['recall'],
-                          metrics['f1_score'], metrics['detection_rate']]
-        colors = ['#2E86AB', '#A23B72', '#F18F01', '#C73E1D', '#592E83']
-        bars = ax.bar(metrics_names, metrics_values, color=colors, alpha=0.8)
-        ax.set_ylim(0, 1)
-        ax.set_ylabel('Score')
-        ax.set_title('Performance Metrics')
+        ax3 = plt.subplot2grid((3, 4), (1, 0), colspan=4, rowspan=1)
+        ax3.axis('off')
 
-        for bar, value in zip(bars, metrics_values):
-            height = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width() / 2., height + 0.01, f'{value:.3f}',
-                    ha='center', va='bottom', fontweight='bold')
+        metrics_data = [
+            ('Accuracy', metrics['accuracy'], '#27ae60'),
+            ('Precision', metrics['precision'], '#3498db'),
+            ('Recall', metrics['recall'], '#e74c3c'),
+            ('F1-Score', metrics['f1_score'], '#9b59b6'),
+            ('Detection Rate', metrics['detection_rate'], '#f39c12')
+        ]
 
-        plt.xticks(rotation=45)
+        y_pos = 0.8
+        for name, value, color in metrics_data:
+            # Progress bar background
+            ax3.barh(y_pos, 1, height=0.08, color='#ecf0f1', alpha=0.5)
+            # Progress bar fill
+            ax3.barh(y_pos, value, height=0.08, color=color, alpha=0.8)
+            # Text labels
+            ax3.text(0.02, y_pos, name, fontsize=11, fontweight='bold', va='center')
+            ax3.text(0.98, y_pos, f'{value:.3f} ({value * 100:.1f}%)', fontsize=11,
+                     fontweight='bold', va='center', ha='right')
+            y_pos -= 0.15
+
+        ax3.set_xlim(0, 1)
+        ax3.set_ylim(0, 1)
+
+        # Summary Statistics
+        ax4 = plt.subplot2grid((3, 4), (2, 0), colspan=4, rowspan=1)
+        ax4.axis('off')
+
+        total_frames = self.results['total_frames']
+        summary_text = f"""Total Frames Processed: {total_frames:,}
+Test Completed: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
+
+        ax4.text(0.5, 0.5, summary_text, fontsize=14, fontweight='bold',
+                 ha='center', va='center',
+                 bbox=dict(boxstyle="round,pad=0.8", facecolor='#d5f4e6', alpha=0.8))
+
         plt.tight_layout()
-        plt.savefig(self.save_dir / 'performance_metrics.png', dpi=150, bbox_inches='tight')
+        plt.savefig(self.save_dir / 'test_report.png', dpi=FIGURE_DPI, bbox_inches='tight',
+                    facecolor=REPORT_BACKGROUND_COLOR, edgecolor='none')
         plt.close()
-
-        # Error Distribution
-        if self.distances:
-            fig, ax = plt.subplots(figsize=(10, 6))
-            ax.hist(self.distances, bins=30, alpha=0.7, color='skyblue', edgecolor='black')
-            ax.axvline(self.args.tolerance, color='red', linestyle='--', linewidth=2,
-                       label=f'Tolerance: {self.args.tolerance}px')
-            ax.set_xlabel('Prediction Error (pixels)')
-            ax.set_ylabel('Frequency')
-            ax.set_title('Prediction Error Distribution')
-            ax.legend()
-            plt.tight_layout()
-            plt.savefig(self.save_dir / 'error_distribution.png', dpi=150, bbox_inches='tight')
-            plt.close()
 
         print(f"\033[92m✓\033[0m Visualizations saved to {self.save_dir}")
 
     def _save_results(self, metrics):
-        results_summary = {
-            'test_config': vars(self.args),
-            'confusion_matrix': {'tp': self.results['tp'], 'tn': self.results['tn'],
-                                 'fp1': self.results['fp1'], 'fp2': self.results['fp2'], 'fn': self.results['fn']},
-            'metrics': metrics,
-            'statistics': {'total_frames': self.results['total_frames'],
-                           'detected_frames': self.results['detected_frames'],
-                           'detection_rate': metrics['detection_rate']},
-            'timestamp': datetime.now().isoformat()
-        }
-
-        with open(self.save_dir / "test_results.json", 'w') as f:
-            json.dump(results_summary, f, indent=2)
-
         if self.args.save_predictions:
             with open(self.save_dir / "predictions.json", 'w') as f:
                 json.dump(self.predictions, f, indent=2)
@@ -324,6 +362,15 @@ class TrackNetTester:
 
 
 def main():
+    print("\n" + "=" * 50)
+    print("\033[96mTrackNet Testing Configuration\033[0m")
+    print("=" * 50)
+    print(f"DETECTION_THRESHOLD:   \033[92m{DETECTION_THRESHOLD}\033[0m")
+    print(f"GROUND_TRUTH_THRESHOLD: \033[92m{GROUND_TRUTH_THRESHOLD}\033[0m")
+    print(f"DISTANCE_TOLERANCE:    \033[92m{DISTANCE_TOLERANCE}\033[0m")
+    print(f"DEFAULT_BATCH_SIZE:    \033[92m{DEFAULT_BATCH_SIZE}\033[0m")
+    print("=" * 50 + "\n")
+
     args = parse_args()
 
     if not Path(args.model).exists():
