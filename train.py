@@ -7,6 +7,8 @@ python train.py --data dataset/train --batch 8 --epochs 50 --lr 0.001
 python train.py --data dataset/train --optimizer Lion --lr 0.0003 --batch 16
 python train.py --resume best.pth --data dataset/train --lr 0.0001
 python train.py --resume checkpoint.pth --data dataset/train --optimizer Lion --epochs 100
+python train.py --data training_data/train --batch 3 --lr 0.0001 --resume best_model.pth --optimizer Lion
+
 
 Parameters:
 --data: Training dataset path (required)
@@ -103,6 +105,7 @@ class Trainer:
         return torch.device(self.args.device)
 
     def _setup_dirs(self):
+        print("Setting up output directories...")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         suffix = "_resumed" if self.args.resume else ""
         self.save_dir = Path(self.args.out) / f"{self.args.name}{suffix}_{timestamp}"
@@ -111,29 +114,37 @@ class Trainer:
         (self.save_dir / "plots").mkdir(exist_ok=True)
         with open(self.save_dir / "config.json", 'w') as f:
             json.dump(vars(self.args), f, indent=2)
+        print(f"Output directory created: {self.save_dir}")
 
     def _load_checkpoint(self):
         if not self.args.resume: return
+        print("Loading checkpoint...")
         path = Path(self.args.resume)
         if not path.exists(): raise FileNotFoundError(f"Checkpoint not found: {path}")
         self.checkpoint = torch.load(path, map_location='cpu')
         self.start_epoch = self.checkpoint['epoch'] + (0 if self.checkpoint.get('is_emergency', False) else 1)
-        print(f"Resume from epoch {self.start_epoch + 1}")
+        print(f"Checkpoint loaded, resuming from epoch {self.start_epoch + 1}")
 
     def _interrupt(self, signum, frame):
-        print("\nInterrupt detected")
+        print("\nInterrupt detected, saving emergency checkpoint...")
         self.interrupted = True
 
     def setup_data(self):
+        print("Loading dataset...")
         dataset = FrameHeatmapDataset(self.args.data)
+        print(f"Dataset loaded: {len(dataset)} samples")
+
+        print("Splitting dataset...")
         torch.manual_seed(self.args.seed)
         train_size = int(self.args.split * len(dataset))
         train_ds, val_ds = random_split(dataset, [train_size, len(dataset) - train_size])
+
+        print("Creating data loaders...")
         self.train_loader = DataLoader(train_ds, batch_size=self.args.batch, shuffle=True,
                                        num_workers=self.args.workers, pin_memory=self.device.type == 'cuda')
         self.val_loader = DataLoader(val_ds, batch_size=self.args.batch, shuffle=False,
                                      num_workers=self.args.workers, pin_memory=self.device.type == 'cuda')
-        print(f"Dataset: {len(dataset)} | Train: {len(train_ds)} | Val: {len(val_ds)}")
+        print(f"Data loaders ready - Train: {len(train_ds)} | Val: {len(val_ds)}")
 
     def _create_optimizer(self):
         optimizers = {
@@ -148,6 +159,7 @@ class Trainer:
         return optimizers[self.args.optimizer]()
 
     def setup_model(self):
+        print("Initializing model...")
         self.model = TrackNet().to(self.device)
         self.criterion = WeightedBinaryCrossEntropy()
         self.optimizer = self._create_optimizer()
@@ -159,12 +171,14 @@ class Trainer:
             self.scheduler = None
 
         if hasattr(self, 'checkpoint'):
+            print("Loading model state from checkpoint...")
             self.model.load_state_dict(self.checkpoint['model_state_dict'])
-            print("Model loaded from checkpoint")
+            print("Model state loaded successfully")
 
-        print(f"Optimizer: {self.args.optimizer} | LR: {self.args.lr} | WD: {self.args.wd}")
+        print(f"Model ready - Optimizer: {self.args.optimizer} | LR: {self.args.lr} | WD: {self.args.wd}")
 
     def save_checkpoint(self, epoch, train_loss, val_loss, is_emergency=False):
+        print("Saving checkpoint...")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         checkpoint = {
             'epoch': epoch,
@@ -186,10 +200,14 @@ class Trainer:
         if not is_emergency and val_loss < self.best_loss:
             self.best_loss = val_loss
             torch.save(checkpoint, self.save_dir / "checkpoints" / "best_model.pth")
+            print(f"Checkpoint saved: {filename} (Best model updated)")
             return filepath, True
+
+        print(f"Checkpoint saved: {filename}")
         return filepath, False
 
     def plot_curves(self, epoch):
+        print("Generating training plots...")
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
 
         if self.losses['batch']:
@@ -216,58 +234,74 @@ class Trainer:
         plt.tight_layout()
         plt.savefig(self.save_dir / "plots" / f"epoch_{epoch + 1}.png", dpi=150, bbox_inches='tight')
         plt.close()
+        print(f"Training plots saved for epoch {epoch + 1}")
 
     def validate(self):
+        print("Starting validation...")
         self.model.eval()
         total_loss = 0.0
         with torch.no_grad():
-            for inputs, targets in self.val_loader:
-                if self.interrupted: break
+            val_pbar = tqdm(total=len(self.val_loader), desc="Validation", ncols=100)
+            for batch_idx, (inputs, targets) in enumerate(self.val_loader):
+                if self.interrupted:
+                    val_pbar.close()
+                    break
                 inputs, targets = inputs.to(self.device), targets.to(self.device)
                 outputs = self.model(inputs)
                 loss = self.criterion(outputs, targets)
                 total_loss += loss.item()
-        return total_loss / len(self.val_loader)
+
+                val_pbar.update(1)
+                val_pbar.set_postfix({'loss': f'{loss.item():.6f}'})
+            val_pbar.close()
+
+        avg_loss = total_loss / len(self.val_loader)
+        print(f"Validation completed - Average loss: {avg_loss:.6f}")
+        return avg_loss
 
     def train(self):
-        print(f"Training on {self.device}")
+        print(f"Starting training on {self.device}")
         self.setup_data()
         self.setup_model()
 
         for epoch in range(self.start_epoch, self.args.epochs):
             if self.interrupted: break
 
+            print(f"\nEpoch {epoch + 1}/{self.args.epochs}")
             start_time = time.time()
             self.model.train()
             total_loss = 0.0
 
-            with tqdm(total=len(self.train_loader), desc=f"Epoch {epoch + 1}/{self.args.epochs}") as pbar:
-                for batch_idx, (inputs, targets) in enumerate(self.train_loader):
-                    if self.interrupted:
-                        val_loss = self.validate()
-                        self.save_checkpoint(epoch, total_loss / (batch_idx + 1), val_loss, True)
-                        self.plot_curves(epoch)
-                        return
+            train_pbar = tqdm(total=len(self.train_loader), desc=f"Training", ncols=100)
+            for batch_idx, (inputs, targets) in enumerate(self.train_loader):
+                if self.interrupted:
+                    train_pbar.close()
+                    print("Emergency save triggered...")
+                    val_loss = self.validate()
+                    self.save_checkpoint(epoch, total_loss / (batch_idx + 1), val_loss, True)
+                    self.plot_curves(epoch)
+                    return
 
-                    inputs, targets = inputs.to(self.device), targets.to(self.device)
-                    self.optimizer.zero_grad()
-                    outputs = self.model(inputs)
-                    loss = self.criterion(outputs, targets)
-                    loss.backward()
-                    self.optimizer.step()
+                inputs, targets = inputs.to(self.device), targets.to(self.device)
+                self.optimizer.zero_grad()
+                outputs = self.model(inputs)
+                loss = self.criterion(outputs, targets)
+                loss.backward()
+                self.optimizer.step()
 
-                    batch_loss = loss.item()
-                    total_loss += batch_loss
-                    self.step += 1
+                batch_loss = loss.item()
+                total_loss += batch_loss
+                self.step += 1
 
-                    if self.step % self.args.plot == 0:
-                        current_lr = self.optimizer.param_groups[0]['lr']
-                        self.losses['batch'].append(batch_loss)
-                        self.losses['steps'].append(self.step)
-                        self.losses['lrs'].append(current_lr)
+                if self.step % self.args.plot == 0:
+                    current_lr = self.optimizer.param_groups[0]['lr']
+                    self.losses['batch'].append(batch_loss)
+                    self.losses['steps'].append(self.step)
+                    self.losses['lrs'].append(current_lr)
 
-                    pbar.update(1)
-                    pbar.set_postfix({'loss': f'{batch_loss:.6f}'})
+                train_pbar.update(1)
+                train_pbar.set_postfix({'loss': f'{batch_loss:.6f}'})
+            train_pbar.close()
 
             train_loss = total_loss / len(self.train_loader)
             val_loss = self.validate()
@@ -282,17 +316,18 @@ class Trainer:
                   f"LR: {current_lr:.6e} Time: {elapsed:.1f}s")
 
             if self.scheduler:
+                print("Updating learning rate scheduler...")
                 self.scheduler.step(val_loss)
 
             _, is_best = self.save_checkpoint(epoch, train_loss, val_loss)
             if is_best:
-                print(f"Best model saved! Val Loss: {val_loss:.6f}")
+                print(f"New best model! Val Loss: {val_loss:.6f}")
 
             self.plot_curves(epoch)
 
         if not self.interrupted:
-            print("Training completed!")
-            print(f"Results saved to: {self.save_dir}")
+            print("\nTraining completed successfully!")
+            print(f"All results saved to: {self.save_dir}")
 
 
 if __name__ == "__main__":
