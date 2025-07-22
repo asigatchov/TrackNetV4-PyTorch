@@ -21,6 +21,7 @@ keras==3.10.0
 keras-nightly==3.10.0.dev2025062203
 kiwisolver==1.4.8
 libclang==18.1.1
+lion-pytorch==0.2.3
 Mako==1.3.10
 Markdown==3.8.2
 markdown-it-py==3.0.0
@@ -48,9 +49,11 @@ PyQt6-Qt6==6.9.1
 PyQt6_sip==13.10.2
 python-dateutil==2.9.0.post0
 pytz==2025.2
+reportlab==4.4.2
 requests==2.32.4
 rich==14.0.0
 scipy==1.16.0
+seaborn==0.13.2
 six==1.17.0
 SQLAlchemy==1.4.54
 sympy==1.14.0
@@ -59,11 +62,12 @@ tensorboard-data-server==0.7.2
 tensorflow==2.19.0
 tensorflow-io-gcs-filesystem==0.37.1
 termcolor==3.1.0
-torch==2.8.0.dev20250618
-torchaudio==2.8.0.dev20250618
-torchvision==0.23.0.dev20250618
+torch==2.9.0.dev20250717
+torchaudio==2.8.0.dev20250717
+torchvision==0.24.0.dev20250717
 tqdm==4.67.1
-typing_extensions==4.14.0
+types-pytz==2025.2.0.20250516
+typing_extensions==4.14.1
 tzdata==2025.2
 urllib3==2.5.0
 Werkzeug==3.1.3
