@@ -6,7 +6,7 @@ import cv2
 import torch
 import os
 from tqdm import tqdm
-from model.tracknet_v4 import TrackNet as TrackNet
+from model.tracknet_v4 import TrackNet
 
 
 class TrackNetPredictor:
@@ -196,13 +196,13 @@ class SegmentedVideoProcessor:
 
 
 def main():
-    model_path = "../tracknet_v4.pth"
-    input_video = "../inference_data/test.mp4"
-    output_video = "../inference_data/processed_video.mp4"
+    model_path = "../best_v2.pth"
+    input_video = "../predict_data/test.mp4"
+    output_video = "../predict_data/processed_video.mp4"
 
     RED_DOT_SIZE = 7
     FRAMES_PER_SEGMENT = 150
-    DETECTION_THRESHOLD = 0.5
+    DETECTION_THRESHOLD = 0.2
 
     print("=" * 60)
     print("Badminton Shuttlecock Detection & Tracking System")
