@@ -7,7 +7,7 @@ python train.py --data dataset/train --batch 8 --epochs 50 --lr 0.001
 python train.py --data dataset/train --optimizer Adam --lr 0.001 --batch 16 --plot 10
 python train.py --resume best.pth --data dataset/train --lr 0.0001
 python train.py --resume checkpoint.pth --data dataset/train --optimizer Adam --epochs 100
-python train.py --data training_data/train --batch 3 --lr 0.0001 --resume best_model.pth --optimizer SGD --plot 5
+python train.py --data training_data/train --batch 3 --lr 1  --optimizer Adadelta
 
 
 Parameters:
