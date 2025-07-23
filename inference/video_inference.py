@@ -196,7 +196,7 @@ class SegmentedVideoProcessor:
 
 
 def main():
-    model_path = "../best_model.pth"
+    model_path = "../tracknet_v4.pth"
     input_video = "../inference_data/test.mp4"
     output_video = "../inference_data/processed_video.mp4"
 
