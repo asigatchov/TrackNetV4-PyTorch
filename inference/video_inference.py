@@ -6,9 +6,11 @@ import cv2
 import torch
 import os
 from tqdm import tqdm
-from model.tracknet import TrackNet as TrackNet
+import argparse
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-
+from model.tracknet import TrackNet
 class TrackNetPredictor:
     def __init__(self, model_path, threshold=0.5):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -196,13 +198,21 @@ class SegmentedVideoProcessor:
 
 
 def main():
-    model_path = "../best_model.pth"
-    input_video = "../inference_data/test.mp4"
-    output_video = "../inference_data/processed_video.mp4"
+    parser = argparse.ArgumentParser(description="Badminton Shuttlecock Detection & Tracking System")
+    parser.add_argument('--model', type=str, default="../best_model.pth", help="Path to model file")
+    parser.add_argument('--input', type=str, default="../inference_data/test.mp4", help="Path to input video")
+    parser.add_argument('--output', type=str, default="../inference_data/processed_video.mp4", help="Path to output video")
+    parser.add_argument('--dot-size', type=int, default=7, help="Red dot size in pixels")
+    parser.add_argument('--frames-per-segment', type=int, default=150, help="Frames per segment")
+    parser.add_argument('--threshold', type=float, default=0.5, help="Detection threshold")
+    args = parser.parse_args()
 
-    RED_DOT_SIZE = 7
-    FRAMES_PER_SEGMENT = 150
-    DETECTION_THRESHOLD = 0.5
+    model_path = args.model
+    input_video = args.input
+    output_video = args.output
+    RED_DOT_SIZE = args.dot_size
+    FRAMES_PER_SEGMENT = args.frames_per_segment
+    DETECTION_THRESHOLD = args.threshold
 
     print("=" * 60)
     print("Badminton Shuttlecock Detection & Tracking System")
