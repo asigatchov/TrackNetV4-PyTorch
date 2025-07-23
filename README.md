@@ -15,8 +15,8 @@ python preprocessing/video_to_heatmap.py --source dataset/raw --output dataset/p
 # Train model
 python train.py --data dataset/preprocessed --batch 4 --epochs 30
 
-# Run inference
-python inference/video_inference.py
+# Run predict
+python predict/video_predict.py
 ```
 
 ## Quick Start for ubuntu cuda with UV manager 
@@ -140,13 +140,13 @@ python train.py --resume checkpoints/best_model.pth --data dataset/preprocessed
 ### Single Frame
 
 ```bash
-python inference/single_frame_inference.py
+python predict/single_frame_predict.py
 ```
 
 ### Video Processing
 
 ```bash
-python inference/video_inference.py
+python predict/video_predict.py
 ```
 
 ### Visualization
