@@ -26,22 +26,15 @@ Parameter Functions:
 - save_predictions: Save prediction coordinates to file (default: False)
 """
 
-# ==================== CONFIGURATION PARAMETERS ====================
-# Ball Detection Settings
-DETECTION_THRESHOLD = 0.5  # Minimum heatmap value to consider as ball detection
-GROUND_TRUTH_THRESHOLD = 0.1  # Minimum heatmap value to consider as ground truth
-DISTANCE_TOLERANCE = 4  # Maximum pixel distance for correct prediction
-
-# Default Testing Parameters
-DEFAULT_BATCH_SIZE = 4  # Default batch size for testing
-DEFAULT_DEVICE = 'auto'  # Default computing device
-DEFAULT_OUTPUT_DIR = 'test_results'  # Default output directory
-DEFAULT_REPORT_LEVEL = 'detailed'  # Default report detail level
-
-# Visualization Settings
-FIGURE_DPI = 150  # Output image resolution
-REPORT_BACKGROUND_COLOR = '#f8f9fa'  # Background color for report
-# ====================================================================
+DETECTION_THRESHOLD = 0.5
+GROUND_TRUTH_THRESHOLD = 0.1
+DISTANCE_TOLERANCE = 4
+DEFAULT_BATCH_SIZE = 4
+DEFAULT_DEVICE = 'auto'
+DEFAULT_OUTPUT_DIR = 'test_results'
+DEFAULT_REPORT_LEVEL = 'detailed'
+FIGURE_DPI = 150
+REPORT_BACKGROUND_COLOR = '#f8f9fa'
 
 import argparse
 import json
@@ -56,7 +49,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from model.tracknet import TrackNet
+from model.tracknet_v2 import TrackNet
 from preprocessing.tracknet_dataset import FrameHeatmapDataset
 
 
@@ -87,8 +80,9 @@ class TrackNetTester:
         self._setup_dirs()
         self._load_model()
 
-        self.predictions = []
+        self.frame_predictions = {}
         self.results = {'tp': 0, 'tn': 0, 'fp1': 0, 'fp2': 0, 'fn': 0, 'total_frames': 0, 'detected_frames': 0}
+        self.predictions = []
 
     def _setup_device(self):
         if self.args.device == 'auto':
@@ -115,7 +109,7 @@ class TrackNetTester:
         state_dict = checkpoint.get('model_state_dict', checkpoint)
         self.model.load_state_dict(state_dict)
         self.model.eval()
-        print(f"\033[92m✓\033[0m Model loaded: {self.args.model}")
+        print(f"Model loaded: {self.args.model}")
 
     def _setup_data(self):
         print("Loading dataset...")
@@ -124,7 +118,7 @@ class TrackNetTester:
             self.test_dataset, batch_size=self.args.batch, shuffle=False,
             num_workers=0, pin_memory=self.device.type == 'cuda'
         )
-        print(f"\033[92m✓\033[0m Dataset loaded: {len(self.test_dataset)} samples")
+        print(f"Dataset loaded: {len(self.test_dataset)} samples")
 
     def _extract_coordinates(self, heatmap):
         if heatmap.max() < self.args.threshold:
@@ -160,10 +154,15 @@ class TrackNetTester:
             else:
                 return 'fp1'
 
-    def _evaluate_batch(self, outputs, targets):
+    def _collect_predictions(self, outputs, targets, batch_start_idx):
         batch_size = outputs.shape[0]
 
         for b in range(batch_size):
+            item_info = self.test_dataset.get_info(batch_start_idx + b)
+            base_frame_idx = item_info['idx']
+            match_name = item_info['match']
+            frame_name = item_info['frame']
+
             for f in range(3):
                 pred_heatmap = outputs[b, f].cpu().numpy()
                 gt_heatmap = targets[b, f].cpu().numpy()
@@ -171,19 +170,48 @@ class TrackNetTester:
                 pred_coord = self._extract_coordinates(pred_heatmap)
                 gt_coord = self._extract_ground_truth_coordinates(gt_heatmap)
 
-                classification = self._classify_prediction(pred_coord, gt_coord)
+                frame_idx = base_frame_idx + f
+                frame_key = f"{match_name}_{frame_name}_{frame_idx}"
+
+                if frame_key not in self.frame_predictions:
+                    self.frame_predictions[frame_key] = []
+
+                self.frame_predictions[frame_key].append({
+                    'pred': pred_coord,
+                    'gt': gt_coord,
+                    'is_center': f == 1,
+                    'distance': self._calculate_distance(pred_coord, gt_coord)
+                })
+
+    def _process_center_frame_predictions(self):
+        print("Processing center frame predictions...")
+
+        for frame_key, predictions in self.frame_predictions.items():
+            center_pred = None
+            for pred in predictions:
+                if pred['is_center']:
+                    center_pred = pred
+                    break
+
+            if center_pred:
+                classification = self._classify_prediction(center_pred['pred'], center_pred['gt'])
                 self.results[classification] += 1
                 self.results['total_frames'] += 1
 
-                if pred_coord is not None:
+                if center_pred['pred'] is not None:
                     self.results['detected_frames'] += 1
 
                 if self.args.save_predictions:
-                    distance = self._calculate_distance(pred_coord, gt_coord)
+                    distance = center_pred['distance'] if center_pred['distance'] != float('inf') else None
                     self.predictions.append({
-                        'predicted': pred_coord, 'ground_truth': gt_coord,
-                        'classification': classification, 'distance': distance if distance != float('inf') else None
+                        'frame_key': frame_key,
+                        'predicted': center_pred['pred'],
+                        'ground_truth': center_pred['gt'],
+                        'classification': classification,
+                        'distance': distance
                     })
+
+        print(f"Processed {self.results['total_frames']} center frame predictions")
 
     def _calculate_metrics(self):
         tp, tn, fp1, fp2, fn = self.results['tp'], self.results['tn'], self.results['fp1'], self.results['fp2'], \
@@ -206,7 +234,6 @@ class TrackNetTester:
     def _generate_visualizations(self, metrics):
         print("Generating visualizations...")
 
-        # Confusion Matrix
         fig, ax = plt.subplots(figsize=(8, 6))
         cm_data = np.array([[self.results['tp'], self.results['fp1'] + self.results['fp2']],
                             [self.results['fn'], self.results['tn']]])
@@ -218,24 +245,22 @@ class TrackNetTester:
         plt.savefig(self.save_dir / 'confusion_matrix.png', dpi=FIGURE_DPI, bbox_inches='tight')
         plt.close()
 
-        # Test Report Dashboard
         fig = plt.figure(figsize=(14, 10))
         fig.patch.set_facecolor(REPORT_BACKGROUND_COLOR)
 
-        # Header
-        fig.suptitle('TrackNet Test Results', fontsize=24, fontweight='bold', y=0.95, color='#2c3e50')
+        fig.suptitle('TrackNet Test Results - Center Frame Evaluation', fontsize=24, fontweight='bold', y=0.95,
+                     color='#2c3e50')
 
-        # Configuration Panel
         ax1 = plt.subplot2grid((3, 4), (0, 0), colspan=2, rowspan=1)
         ax1.axis('off')
         config_text = f"""Dataset: {self.args.data}
 Model: {self.args.model}
 Device: {self.device}
-Threshold: {self.args.threshold} | Tolerance: {self.args.tolerance}px"""
+Threshold: {self.args.threshold} | Tolerance: {self.args.tolerance}px
+Evaluation: Center Frame Only"""
         ax1.text(0.05, 0.5, config_text, fontsize=12, verticalalignment='center',
                  bbox=dict(boxstyle="round,pad=0.5", facecolor='#e8f4fd', alpha=0.8))
 
-        # Confusion Matrix Data
         ax2 = plt.subplot2grid((3, 4), (0, 2), colspan=2, rowspan=1)
         ax2.axis('off')
         cm_text = f"""True Positives: {self.results['tp']:,}
@@ -246,7 +271,6 @@ False Negatives: {self.results['fn']:,}"""
         ax2.text(0.05, 0.5, cm_text, fontsize=12, verticalalignment='center',
                  bbox=dict(boxstyle="round,pad=0.5", facecolor='#fff2e8', alpha=0.8))
 
-        # Performance Metrics
         ax3 = plt.subplot2grid((3, 4), (1, 0), colspan=4, rowspan=1)
         ax3.axis('off')
 
@@ -260,11 +284,8 @@ False Negatives: {self.results['fn']:,}"""
 
         y_pos = 0.8
         for name, value, color in metrics_data:
-            # Progress bar background
             ax3.barh(y_pos, 1, height=0.08, color='#ecf0f1', alpha=0.5)
-            # Progress bar fill
             ax3.barh(y_pos, value, height=0.08, color=color, alpha=0.8)
-            # Text labels
             ax3.text(0.02, y_pos, name, fontsize=11, fontweight='bold', va='center')
             ax3.text(0.98, y_pos, f'{value:.3f} ({value * 100:.1f}%)', fontsize=11,
                      fontweight='bold', va='center', ha='right')
@@ -273,12 +294,11 @@ False Negatives: {self.results['fn']:,}"""
         ax3.set_xlim(0, 1)
         ax3.set_ylim(0, 1)
 
-        # Summary Statistics
         ax4 = plt.subplot2grid((3, 4), (2, 0), colspan=4, rowspan=1)
         ax4.axis('off')
 
         total_frames = self.results['total_frames']
-        summary_text = f"""Total Frames Processed: {total_frames:,}
+        summary_text = f"""Total Center Frames Processed: {total_frames:,}
 Test Completed: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
 
         ax4.text(0.5, 0.5, summary_text, fontsize=14, fontweight='bold',
@@ -290,7 +310,7 @@ Test Completed: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
                     facecolor=REPORT_BACKGROUND_COLOR, edgecolor='none')
         plt.close()
 
-        print(f"\033[92m✓\033[0m Visualizations saved to {self.save_dir}")
+        print(f"Visualizations saved to {self.save_dir}")
 
     def _save_results(self, metrics):
         if self.args.save_predictions:
@@ -299,7 +319,7 @@ Test Completed: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
 
     def _print_results(self, metrics):
         print("\n" + "=" * 60)
-        print("\033[96mTrackNet Test Results\033[0m")
+        print("TrackNet Test Results - Center Frame Evaluation")
         print("=" * 60)
 
         if self.args.report == 'detailed':
@@ -308,33 +328,36 @@ Test Completed: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
             print(f"Device: {self.device}")
             print(f"Detection Threshold: {self.args.threshold}")
             print(f"Distance Tolerance: {self.args.tolerance} pixels")
+            print(f"Evaluation Method: Center Frame Only")
             print("-" * 60)
 
             print("Confusion Matrix:")
-            print(f"  \033[92mTrue Positives (TP):\033[0m {self.results['tp']}")
+            print(f"  True Positives (TP): {self.results['tp']}")
             print(f"  True Negatives (TN): {self.results['tn']}")
-            print(f"  \033[93mFalse Positives (FP1 - wrong position):\033[0m {self.results['fp1']}")
-            print(f"  \033[93mFalse Positives (FP2 - false detection):\033[0m {self.results['fp2']}")
-            print(f"  \033[91mFalse Negatives (FN):\033[0m {self.results['fn']}")
+            print(f"  False Positives (FP1 - wrong position): {self.results['fp1']}")
+            print(f"  False Positives (FP2 - false detection): {self.results['fp2']}")
+            print(f"  False Negatives (FN): {self.results['fn']}")
             print("-" * 60)
 
         print("Performance Metrics:")
-        print(f"  Accuracy:       \033[92m{metrics['accuracy']:.3f}\033[0m ({metrics['accuracy'] * 100:.1f}%)")
-        print(f"  Precision:      \033[94m{metrics['precision']:.3f}\033[0m ({metrics['precision'] * 100:.1f}%)")
-        print(f"  Recall:         \033[94m{metrics['recall']:.3f}\033[0m ({metrics['recall'] * 100:.1f}%)")
-        print(f"  F1-Score:       \033[95m{metrics['f1_score']:.3f}\033[0m")
+        print(f"  Accuracy:       {metrics['accuracy']:.3f} ({metrics['accuracy'] * 100:.1f}%)")
+        print(f"  Precision:      {metrics['precision']:.3f} ({metrics['precision'] * 100:.1f}%)")
+        print(f"  Recall:         {metrics['recall']:.3f} ({metrics['recall'] * 100:.1f}%)")
+        print(f"  F1-Score:       {metrics['f1_score']:.3f}")
         print(f"  Detection Rate: {metrics['detection_rate']:.3f} ({metrics['detection_rate'] * 100:.1f}%)")
 
         print("-" * 60)
-        print(f"Total Frames: {self.results['total_frames']}")
-        print(f"\033[92m✓ Results saved to: {self.save_dir}\033[0m")
+        print(f"Total Center Frames: {self.results['total_frames']}")
+        print(f"Results saved to: {self.save_dir}")
         print("=" * 60)
 
     def run_test(self):
-        print(f"Starting TrackNet evaluation on \033[96m{self.device}\033[0m")
+        print(f"Starting TrackNet evaluation on {self.device}")
+        print("Using center frame evaluation strategy")
         self._setup_data()
 
         start_time = time.time()
+        batch_start_idx = 0
 
         with torch.no_grad():
             with tqdm(total=len(self.test_loader), desc="Testing Progress",
@@ -344,14 +367,17 @@ Test Completed: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
                     targets = targets.to(self.device)
 
                     outputs = self.model(inputs)
-                    self._evaluate_batch(outputs, targets)
+                    self._collect_predictions(outputs, targets, batch_start_idx)
 
+                    batch_start_idx += inputs.shape[0]
                     pbar.update(1)
+
+        self._process_center_frame_predictions()
 
         test_time = time.time() - start_time
         metrics = self._calculate_metrics()
 
-        print(f"\n\033[92m✓\033[0m Testing completed in {test_time:.1f}s")
+        print(f"\nTesting completed in {test_time:.1f}s")
         print(f"Processing speed: {self.results['total_frames'] / test_time:.1f} FPS")
 
         self._generate_visualizations(metrics)
@@ -363,22 +389,23 @@ Test Completed: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
 
 def main():
     print("\n" + "=" * 50)
-    print("\033[96mTrackNet Testing Configuration\033[0m")
+    print("TrackNet Testing Configuration")
     print("=" * 50)
-    print(f"DETECTION_THRESHOLD:   \033[92m{DETECTION_THRESHOLD}\033[0m")
-    print(f"GROUND_TRUTH_THRESHOLD: \033[92m{GROUND_TRUTH_THRESHOLD}\033[0m")
-    print(f"DISTANCE_TOLERANCE:    \033[92m{DISTANCE_TOLERANCE}\033[0m")
-    print(f"DEFAULT_BATCH_SIZE:    \033[92m{DEFAULT_BATCH_SIZE}\033[0m")
+    print(f"DETECTION_THRESHOLD:   {DETECTION_THRESHOLD}")
+    print(f"GROUND_TRUTH_THRESHOLD: {GROUND_TRUTH_THRESHOLD}")
+    print(f"DISTANCE_TOLERANCE:    {DISTANCE_TOLERANCE}")
+    print(f"DEFAULT_BATCH_SIZE:    {DEFAULT_BATCH_SIZE}")
+    print(f"EVALUATION_METHOD:     Center Frame Only")
     print("=" * 50 + "\n")
 
     args = parse_args()
 
     if not Path(args.model).exists():
-        print(f"\033[91mError: Model file not found: {args.model}\033[0m")
+        print(f"Error: Model file not found: {args.model}")
         return
 
     if not Path(args.data).exists():
-        print(f"\033[91mError: Test data directory not found: {args.data}\033[0m")
+        print(f"Error: Test data directory not found: {args.data}")
         return
 
     tester = TrackNetTester(args)

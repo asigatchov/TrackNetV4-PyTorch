@@ -44,7 +44,7 @@ from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
 from lion_pytorch import Lion
 from model.loss import WeightedBinaryCrossEntropy
-from model.tracknet import TrackNet
+from model.tracknet_v2 import TrackNet
 from preprocessing.tracknet_dataset import FrameHeatmapDataset
 
 
