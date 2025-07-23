@@ -41,16 +41,16 @@ import json
 import time
 from datetime import datetime
 from pathlib import Path
-
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import seaborn as sns
-
-from model.tracknet_v2 import TrackNet
 from preprocessing.tracknet_dataset import FrameHeatmapDataset
+
+# Choose the version of TrackNet model you want to use
+from model.tracknet_v2 import TrackNet
 
 
 def parse_args():

@@ -43,8 +43,10 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
 from model.loss import WeightedBinaryCrossEntropy
-from model.tracknet_v2 import TrackNet
 from preprocessing.tracknet_dataset import FrameHeatmapDataset
+
+# Choose the version of TrackNet model you want to use
+from model.tracknet_v2 import TrackNet
 
 
 def parse_args():
