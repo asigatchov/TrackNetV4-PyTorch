@@ -1,54 +1,106 @@
 # TrackNet V4 PyTorch
 
-PyTorch implementation of **TrackNet V4: Enhancing Fast Sports Object Tracking with Motion Attention Maps**.
+A PyTorch implementation of **TrackNet V4: Enhancing Fast Sports Object Tracking with Motion Attention Maps** for real-time tracking of small, fast-moving objects in sports videos.
 
-TrackNet V4 is a deep learning model for real-time tracking of small, fast-moving objects in sports videos (e.g., tennis balls, ping-pong balls). The model uses motion attention maps to enhance tracking accuracy by focusing on temporal changes between consecutive frames.
+## Overview
 
-## Features
+TrackNet V4 enhances sports object tracking by incorporating motion attention maps that focus on temporal changes between consecutive frames. The model excels at tracking small, fast-moving objects like tennis balls and ping-pong balls in challenging scenarios with occlusion and motion blur.
 
-- **Motion-aware tracking**: Uses frame differencing and attention mechanisms to track fast-moving objects
-- **Real-time performance**: Optimized for video processing applications
-- **Robust detection**: Handles occlusion and motion blur in sports scenarios
-- **End-to-end training**: Direct optimization from raw video to object coordinates
+**Key Features:**
+- Motion-aware tracking with attention mechanisms
+- Real-time video processing capabilities  
+- Robust handling of occlusion and motion blur
+- End-to-end training pipeline
+
+## Requirements
+
+- Python ≥ 3.10
+- PyTorch ≥ 1.9.0
+- CUDA (recommended for training)
 
 ## Installation
 
+### Option 1: pip
 ```bash
-# Clone repository
 git clone https://github.com/AnInsomniacy/tracknet-v4-pytorch.git
 cd tracknet-v4-pytorch
-
-# Install dependencies
 pip install -r requirements.txt
 ```
 
-## Quick Start
-
+### Option 2: uv (recommended)
 ```bash
-# 1. Preprocess your dataset
-python preprocessing/video_to_heatmap.py --source dataset/raw --output dataset/preprocessed
-
-# 2. Train the model
-python train.py --data dataset/preprocessed --batch 4 --epochs 30
-
-# 3. Run inference (modify paths in script as needed)
-PYTHONPATH=. python predict/video_predict.py
-```
-
-## Quick Start for ubuntu cuda with UV manager 
-
-```bash
-git clone <repository-url>
+git clone https://github.com/AnInsomniacy/tracknet-v4-pytorch.git
 cd tracknet-v4-pytorch
 curl -LsSf https://astral.sh/uv/install.sh | sh
-
 source ~/.bashrc
-
 uv sync
-uv run preprocessing/video_to_heatmap.py --source dataset/raw --output dataset/preprocessed
-uv run train.py --data dataset/preprocessed --batch 4 --epochs 30
-
 ```
+
+## Usage
+
+### Data Preprocessing
+```bash
+# Prepare your dataset
+python preprocessing/video_to_heatmap.py --source dataset/raw --output dataset/preprocessed
+
+# With uv
+uv run preprocessing/video_to_heatmap.py --source dataset/raw --output dataset/preprocessed
+```
+
+### Training
+```bash
+# Basic training
+python train.py --data dataset/preprocessed
+
+# Custom configuration  
+python train.py --data dataset/preprocessed --batch 8 --epochs 50 --lr 0.001 --optimizer Adam
+
+# Resume training
+python train.py --resume checkpoints/model.pth --data dataset/preprocessed
+```
+
+### Evaluation
+```bash
+# Test model performance
+python test.py --model best_model.pth --data dataset/test
+
+# Detailed evaluation report
+python test.py --model best_model.pth --data dataset/test --report detailed --out results/
+```
+
+### Inference
+```bash
+# Video prediction
+PYTHONPATH=. python predict/video_predict.py
+
+# Single frame prediction  
+PYTHONPATH=. python predict/single_frame_predict.py
+```
+
+**Note:** Modify model and input paths in prediction scripts as needed for your data.
+
+## Model Architecture
+
+TrackNet V4 introduces motion attention to enhance tracking performance:
+
+- **Input:** 3 consecutive RGB frames (9 channels, 288×512)
+- **Motion Prompt Layer:** Extracts motion attention from frame differences  
+- **Encoder-Decoder:** VGG-style architecture with skip connections
+- **Output:** Object probability heatmaps (3 channels, 288×512)
+
+The motion attention mechanism focuses on regions with significant temporal changes, improving detection of fast-moving objects.
+
+## Data Format
+
+**Input Structure:**
+```
+dataset/
+├── inputs/          # RGB frames (288×512)
+└── heatmaps/        # Ground truth heatmaps (288×512)
+```
+
+- Input: 3 consecutive frames concatenated into 9-channel tensors
+- Heatmaps: Gaussian distributions centered on object locations
 
 ## Project Structure
 
@@ -67,68 +119,8 @@ tracknet-v4-pytorch/
 │   └── video_predict.py        # Video batch processing
 ├── train.py                    # Training script
 ├── test.py                     # Model evaluation
-└── requirements.txt
+└── requirements.txt            # Dependencies
 ```
-
-## Usage
-
-### Training
-
-```bash
-# Basic training
-python train.py --data dataset/preprocessed
-
-# Custom configuration
-python train.py --data dataset/preprocessed --batch 8 --epochs 50 --lr 0.001 --optimizer Adam
-
-# Resume from checkpoint
-python train.py --resume checkpoints/model.pth --data dataset/preprocessed
-```
-
-### Testing & Evaluation
-
-```bash
-# Evaluate model performance
-python test.py --model best_model.pth --data dataset/test
-
-# Generate detailed evaluation report
-python test.py --model best_model.pth --data dataset/test --report detailed --out results/
-```
-
-### Inference
-
-```bash
-# Set Python path and run prediction
-PYTHONPATH=. python predict/video_predict.py
-
-# For single frame inference
-PYTHONPATH=. python predict/single_frame_predict.py
-```
-
-**Note**: The prediction scripts use predefined paths. Modify the model and input paths in the script files as needed.
-
-## Data Format
-
-The model expects preprocessed data with the following structure:
-
-```
-dataset/
-├── inputs/          # RGB frames (288×512)
-└── heatmaps/        # Ground truth heatmaps (288×512)
-```
-
-Each input consists of 3 consecutive frames concatenated into a 9-channel tensor. Heatmaps are Gaussian distributions centered on object locations.
-
-## Model Architecture
-
-TrackNet V4 introduces motion attention to improve tracking accuracy:
-
-- **Input**: 3 consecutive RGB frames (9 channels, 288×512)
-- **Motion Prompt Layer**: Extracts motion attention from frame differences
-- **Encoder-Decoder**: VGG-style architecture with skip connections
-- **Output**: Probability heatmaps for object detection (3 channels, 288×512)
-
-The motion attention mechanism helps the model focus on regions with significant temporal changes, improving detection of fast-moving objects.
 
 ## Citation
 
