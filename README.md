@@ -1,22 +1,38 @@
-# TrackNetV4 PyTorch Implementation
+# TrackNet V4 PyTorch
 
-PyTorch implementation of **TrackNetV4: Enhancing Fast Sports Object Tracking with Motion Attention Maps**.
+PyTorch implementation of **TrackNet V4: Enhancing Fast Sports Object Tracking with Motion Attention Maps**.
+
+TrackNet V4 is a deep learning model for real-time tracking of small, fast-moving objects in sports videos (e.g., tennis balls, ping-pong balls). The model uses motion attention maps to enhance tracking accuracy by focusing on temporal changes between consecutive frames.
+
+## Features
+
+- **Motion-aware tracking**: Uses frame differencing and attention mechanisms to track fast-moving objects
+- **Real-time performance**: Optimized for video processing applications
+- **Robust detection**: Handles occlusion and motion blur in sports scenarios
+- **End-to-end training**: Direct optimization from raw video to object coordinates
+
+## Installation
+
+```bash
+# Clone repository
+git clone https://github.com/AnInsomniacy/tracknet-v4-pytorch.git
+cd tracknet-v4-pytorch
+
+# Install dependencies
+pip install -r requirements.txt
+```
 
 ## Quick Start
 
 ```bash
-git clone <repository-url>
-cd tracknet-v4-pytorch
-pip install -r requirements.txt
-
-# Preprocess dataset
+# 1. Preprocess your dataset
 python preprocessing/video_to_heatmap.py --source dataset/raw --output dataset/preprocessed
 
-# Train model
+# 2. Train the model
 python train.py --data dataset/preprocessed --batch 4 --epochs 30
 
-# Run predict
-python predict/video_predict.py
+# 3. Run inference (modify paths in script as needed)
+PYTHONPATH=. python predict/video_predict.py
 ```
 
 ## Project Structure
@@ -24,129 +40,84 @@ python predict/video_predict.py
 ```
 tracknet-v4-pytorch/
 ├── model/
-│   ├── tracknet.py              # TrackNetV4 architecture
-│   └── loss.py                  # Weighted Binary Cross Entropy
+│   ├── tracknet_v4.py          # Main TrackNet V4 architecture
+│   ├── tracknet_v2.py          # Legacy TrackNet V2
+│   └── loss.py                 # Weighted Binary Cross Entropy loss
 ├── preprocessing/
-│   ├── video_to_heatmap.py      # Dataset preprocessing
-│   ├── tracknet_dataset.py      # PyTorch dataset loader
-│   └── data_visualizer.py       # Training data visualization
-├── inference/
-│   ├── single_frame_inference.py
-│   └── video_inference.py
-├── train.py                     # Training script
+│   ├── video_to_heatmap.py     # Video preprocessing pipeline
+│   ├── tracknet_dataset.py     # PyTorch dataset loader
+│   └── data_visualizer.py      # Data visualization tools
+├── predict/
+│   ├── single_frame_predict.py # Single frame inference
+│   └── video_predict.py        # Video batch processing
+├── train.py                    # Training script
+├── test.py                     # Model evaluation
 └── requirements.txt
 ```
 
-## Core Implementation
+## Usage
 
-### Motion-Aware Fusion Architecture
-
-TrackNetV4 integrates motion attention maps with visual features through a lightweight motion prompt layer.
-
-**Motion Prompt Layer:**
-
-```python
-class MotionPrompt(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.a = nn.Parameter(torch.randn(1))  # slope
-        self.b = nn.Parameter(torch.randn(1))  # shift
-
-    def forward(self, x):
-        # Frame differencing: D_t = |F_{t+1} - F_t|
-        diffs = [gray[:, i + 1] - gray[:, i] for i in range(T - 1)]
-        D = torch.stack(diffs, dim=1)
-
-        # Motion attention: A = sigmoid(a * |D| + b)
-        A = torch.sigmoid(self.a * D.abs() + self.b)
-        return A
-```
-
-**Motion-Aware Fusion:**
-
-```python
-def forward(self, vis, mot):
-    # Fuse: [V_t, A_t ⊙ V_{t+1}, A_{t+1} ⊙ V_{t+2}]
-    return torch.stack([vis[:, 0],
-                        mot[:, 0] * vis[:, 1],
-                        mot[:, 1] * vis[:, 2]], dim=1)
-```
-
-**Network Architecture:**
-
-- Input: 3 consecutive RGB frames (9 channels, 288×512)
-- Encoder: VGG16-style with skip connections
-- Decoder: Symmetric upsampling
-- Output: 3 probability heatmaps
-
-### Weighted Binary Cross Entropy Loss
-
-```python
-def forward(self, y_pred, y_true):
-    w = y_pred
-    term1 = (1 - w) ** 2 * y_true * torch.log(y_pred)
-    term2 = w ** 2 * (1 - y_true) * torch.log(1 - y_pred)
-    return -(term1 + term2).mean()
-```
-
-## Dataset Format
-
-### Input Structure
-
-```
-dataset/raw/match1/
-├── csv/rally1_ball.csv          # Frame,Visibility,X,Y
-└── video/rally1.mp4
-```
-
-### Processed Structure
-
-```
-dataset/preprocessed/match1/
-├── inputs/rally1/               # 512×288 RGB frames
-└── heatmaps/rally1/             # Gaussian heatmaps (sigma=3.0)
-```
-
-## Training
+### Training
 
 ```bash
 # Basic training
 python train.py --data dataset/preprocessed
 
-# Advanced options
-python train.py --data dataset/preprocessed --batch 8 --epochs 50 --lr 1.5 --optimizer Adam
+# Custom configuration
+python train.py --data dataset/preprocessed --batch 8 --epochs 50 --lr 0.001 --optimizer Adam
 
-# Resume training
-python train.py --resume checkpoints/best_model.pth --data dataset/preprocessed
+# Resume from checkpoint
+python train.py --resume checkpoints/model.pth --data dataset/preprocessed
 ```
 
-## Inference
-
-### Single Frame
+### Testing & Evaluation
 
 ```bash
-python predict/single_frame_predict.py
+# Evaluate model performance
+python test.py --model best_model.pth --data dataset/test
+
+# Generate detailed evaluation report
+python test.py --model best_model.pth --data dataset/test --report detailed --out results/
 ```
 
-### Video Processing
+### Inference
 
 ```bash
-python predict/video_predict.py
+# Set Python path and run prediction
+PYTHONPATH=. python predict/video_predict.py
+
+# For single frame inference
+PYTHONPATH=. python predict/single_frame_predict.py
 ```
 
-### Visualization
+**Note**: The prediction scripts use predefined paths. Modify the model and input paths in the script files as needed.
 
-```bash
-python preprocessing/data_visualizer.py --source dataset/preprocessed/match1
+## Data Format
+
+The model expects preprocessed data with the following structure:
+
+```
+dataset/
+├── inputs/          # RGB frames (288×512)
+└── heatmaps/        # Ground truth heatmaps (288×512)
 ```
 
-## Dependencies
+Each input consists of 3 consecutive frames concatenated into a 9-channel tensor. Heatmaps are Gaussian distributions centered on object locations.
 
-```bash
-pip install torch torchvision opencv-python pandas numpy scipy tqdm matplotlib
-```
+## Model Architecture
+
+TrackNet V4 introduces motion attention to improve tracking accuracy:
+
+- **Input**: 3 consecutive RGB frames (9 channels, 288×512)
+- **Motion Prompt Layer**: Extracts motion attention from frame differences
+- **Encoder-Decoder**: VGG-style architecture with skip connections
+- **Output**: Probability heatmaps for object detection (3 channels, 288×512)
+
+The motion attention mechanism helps the model focus on regions with significant temporal changes, improving detection of fast-moving objects.
 
 ## Citation
+
+If you use this code in your research, please cite:
 
 ```bibtex
 @article{raj2024tracknetv4,
@@ -156,3 +127,7 @@ pip install torch torchvision opencv-python pandas numpy scipy tqdm matplotlib
     year={2024}
 }
 ```
+
+## License
+
+This project is available for research and educational purposes.
