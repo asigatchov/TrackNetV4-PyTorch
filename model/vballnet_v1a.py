@@ -16,17 +16,15 @@ def rearrange_tensor(input_tensor, order):
 def power_normalization(input, a, b):
     """
     Power normalization function for attention map generation.
-    Vectorized to ensure ONNX compatibility.
     """
     return 1 / (1 + torch.exp(-(5 / (0.45 * torch.abs(torch.tanh(a)) + 1e-1)) * (torch.abs(input) - 0.6 * torch.tanh(b))))
 
 # MotionPrompt Module
 class MotionPrompt(nn.Module):
     """
-    A module for generating attention maps from video sequences with GRU for temporal modeling.
-    Uses central differences for motion detection and GRU to process temporal dependencies.
+    A module for generating attention maps from video sequences.
+    Uses central differences for motion detection to align with current frame.
     Supports grayscale (N frames) and RGB (N×3 channels) modes.
-    Optimized for ONNX compatibility and performance.
     """
     def __init__(self, num_frames, mode="grayscale", penalty_weight=0.0):
         super().__init__()
@@ -41,24 +39,6 @@ class MotionPrompt(nn.Module):
         self.b = nn.Parameter(torch.tensor(0.0))
         self.lambda1 = penalty_weight
 
-        # GRU для обработки последовательности разностей кадров
-        self.gru = nn.GRU(
-            input_size=256,
-            hidden_size=256,
-            num_layers=1,
-            batch_first=True
-        )
-
-        # Слои для подготовки входа и выхода GRU
-        self.pool = nn.MaxPool2d(kernel_size=16, stride=16)  # Уменьшает 288x512 до 18x32
-        self.pooled_height, self.pooled_width = 288 // 16, 512 // 16  # 18, 32
-        self.reduced_channels = 1  # Фиксированное количество каналов для conv_reduce
-        self.conv_reduce = nn.Conv2d(1, self.reduced_channels, kernel_size=1)
-        self.linear_reduce = nn.Linear(self.reduced_channels * self.pooled_height * self.pooled_width, 256)
-        self.linear_expand = nn.Linear(256, self.reduced_channels * self.pooled_height * self.pooled_width)
-        self.conv_expand = nn.Conv2d(self.reduced_channels, 1, kernel_size=1)
-        self.upsample = nn.Upsample(size=(288, 512), mode='bilinear', align_corners=False)
-
     def forward(self, video_seq):
         loss = torch.tensor(0.0, device=video_seq.device)
         video_seq = rearrange_tensor(video_seq, self.input_permutation)
@@ -71,8 +51,8 @@ class MotionPrompt(nn.Module):
         else:  # grayscale mode
             grayscale_video_seq = norm_seq[:, :, 0, :, :]  # Single channel per frame
 
-        # Compute central differences for frames t=0 to t=num_frames-1
-        frame_diffs = []
+        # Compute central differences for frames t=1 to t=num_frames-2
+        attention_map = []
         for t in range(self.num_frames):
             if t == 0:
                 # Forward difference for first frame
@@ -83,32 +63,9 @@ class MotionPrompt(nn.Module):
             else:
                 # Central difference for intermediate frames
                 frame_diff = (grayscale_video_seq[:, t + 1] - grayscale_video_seq[:, t - 1]) / 2
-            frame_diffs.append(frame_diff)
+            attention_map.append(power_normalization(frame_diff, self.a, self.b))
 
-        frame_diffs = torch.stack(frame_diffs, dim=1)  # Shape: (batch, num_frames, height, width)
-
-        # Подготовка для GRU
-        batch_size, seq_len, height, width = frame_diffs.shape
-        frame_diffs = frame_diffs.view(batch_size * seq_len, 1, height, width)  # (batch*seq_len, 1, 288, 512)
-        pooled_diffs = self.pool(frame_diffs)  # (batch*seq_len, 1, 18, 32)
-        reduced_diffs = self.conv_reduce(pooled_diffs)  # (batch*seq_len, reduced_channels, 18, 32)
-        reduced_diffs = reduced_diffs.view(batch_size * seq_len, -1)  # (batch*seq_len, reduced_channels * 18 * 32)
-        reduced_diffs = self.linear_reduce(reduced_diffs)  # (batch*seq_len, 256)
-        reduced_diffs = reduced_diffs.view(batch_size, seq_len, 256)  # (batch, seq_len, 256)
-
-        # Пропускаем через GRU
-        gru_out, _ = self.gru(reduced_diffs)  # (batch, seq_len, 256)
-
-        # Восстанавливаем формат для карт внимания
-        gru_out = gru_out.reshape(batch_size * seq_len, 256)  # (batch*seq_len, 256)
-        expanded_diffs = self.linear_expand(gru_out)  # (batch*seq_len, reduced_channels * 18 * 32)
-        expanded_diffs = expanded_diffs.view(batch_size * seq_len, self.reduced_channels, self.pooled_height, self.pooled_width)  # (batch*seq_len, reduced_channels, 18, 32)
-        expanded_diffs = self.conv_expand(expanded_diffs)  # (batch*seq_len, 1, 18, 32)
-        expanded_diffs = self.upsample(expanded_diffs)  # (batch*seq_len, 1, 288, 512)
-        expanded_diffs = expanded_diffs.view(batch_size, seq_len, height, width)  # (batch, seq_len, 288, 512)
-
-        # Генерация карт внимания (векторизованная для ONNX)
-        attention_map = power_normalization(expanded_diffs, self.a, self.b)  # Shape: (batch, num_frames, height, width)
+        attention_map = torch.stack(attention_map, dim=1)  # Shape: (batch, num_frames, height, width)
         norm_attention = attention_map.unsqueeze(2)
 
         if self.training:
