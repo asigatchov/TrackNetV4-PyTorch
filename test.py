@@ -51,6 +51,7 @@ from preprocessing.tracknet_dataset import FrameHeatmapDataset
 
 # Choose the version of TrackNet model you want to use
 from model.tracknet_v4 import TrackNet
+from model.vballnet_v1 import VballNetV1
 
 
 def parse_args():
@@ -104,7 +105,10 @@ class TrackNetTester:
 
     def _load_model(self):
         print("Loading model...")
-        self.model = TrackNet().to(self.device)
+        if 'VballNetV1' in self.args.model:
+            self.model = VballNetV1().to(self.device)
+        else:
+            self.model = TrackNet().to(self.device)
         checkpoint = torch.load(self.args.model, map_location=self.device)
         state_dict = checkpoint.get('model_state_dict', checkpoint)
         self.model.load_state_dict(state_dict)

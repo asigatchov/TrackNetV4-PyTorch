@@ -9,6 +9,8 @@ from tqdm import tqdm
 import torch
 
 from model.tracknet_v4 import TrackNet
+from model.vballnet_v1 import VballNetV1
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Volleyball ball detection and tracking")
@@ -24,8 +26,12 @@ def load_model(model_path, input_height=288, input_width=512):
     if not os.path.exists(model_path):
         raise ValueError(f"Model weights file not found: {model_path}")
 
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = TrackNet().to(device)
+    if 'VballNetV1' in model_path:
+       model = VballNetV1().to(device) 
+    else:
+        model = TrackNet().to(device)
 
     checkpoint = torch.load(model_path, map_location=device)
     state_dict = checkpoint.get('model_state_dict', checkpoint)
