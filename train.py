@@ -46,7 +46,8 @@ from model.loss import WeightedBinaryCrossEntropy
 from preprocessing.tracknet_dataset import FrameHeatmapDataset
 
 # Choose the version of TrackNet model you want to use
-from model.tracknet_v4 import TrackNet
+#from model.tracknet_v4 import TrackNet
+from model.vballnet_v1 import VballNetV1 as TrackNet
 
 
 def parse_args():
