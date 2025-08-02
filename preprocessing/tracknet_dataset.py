@@ -5,6 +5,8 @@ import torchvision.transforms as transforms
 from PIL import Image
 from torch.utils.data import Dataset
 import random
+import cv2
+import numpy as np
 
 class FrameHeatmapDataset(Dataset):
     def __init__(self, root_dir, transform=None, heatmap_transform=None):
@@ -15,21 +17,21 @@ class FrameHeatmapDataset(Dataset):
             heatmap_transform: Transform for heatmaps (default: includes same augmentation and normalize to [0,1])
         """
         self.root_dir = Path(root_dir)
-        
+
         # Define augmentation pipeline for inputs (RGB images)
         self.transform = transform or transforms.Compose([
-            transforms.RandomHorizontalFlip(p=0.5),  # Зеркалирование лево-право с вероятностью 50%
-            transforms.RandomRotation(degrees=10),   # Поворот на ±10 градусов
+    #       transforms.RandomHorizontalFlip(p=0.5),  # Зеркалирование лево-право с вероятностью 50%
+    #       transforms.RandomRotation(degrees=10),   # Поворот на ±10 градусов
             transforms.ToTensor()                   # Нормализация в [0,1]
         ])
-        
+
         # Define augmentation pipeline for heatmaps (grayscale)
         self.heatmap_transform = heatmap_transform or transforms.Compose([
-            transforms.RandomHorizontalFlip(p=0.5),  # Зеркалирование лево-право с вероятностью 50%
-            transforms.RandomRotation(degrees=10),   # Поворот на ±10 градусов
+    #        transforms.RandomHorizontalFlip(p=0.5),  # Зеркалирование лево-право с вероятностью 50%
+    #        transforms.RandomRotation(degrees=10),   # Поворот на ±10 градусов
             transforms.ToTensor()                   # Нормализация в [0,1]
         ])
-        
+
         self.data_items = self._scan_dataset()
 
     def _scan_dataset(self):
@@ -111,6 +113,49 @@ class FrameHeatmapDataset(Dataset):
             channels = 1 if is_heatmap else 3
             return torch.zeros(channels, 288, 512)
 
+    def _load_images_synced(self, input_paths, heatmap_paths):
+        """
+        Load and augment images and heatmaps synchronously.
+        Returns:
+            inputs: (9, 288, 512) tensor
+            heatmaps: (3, 288, 512) tensor
+        """
+        # Load as PIL.Image
+        input_imgs = [Image.open(p).convert('RGB') for p in input_paths]
+        heatmap_imgs = [Image.open(p).convert('L') for p in heatmap_paths]
+
+        # Convert to numpy arrays
+        input_np = [np.array(img) for img in input_imgs]  # (H, W, 3)
+        heatmap_np = [np.array(img) for img in heatmap_imgs]  # (H, W)
+
+        # Stack along channel axis
+        frames = np.concatenate(input_np, axis=2)  # (H, W, 9)
+        heatmaps = np.stack(heatmap_np, axis=2)    # (H, W, 3)
+        combined = np.concatenate([frames, heatmaps], axis=2)  # (H, W, 12)
+
+        # --- Apply augmentations synchronously ---
+        # Random horizontal flip
+        if random.random() < 0.5:
+            combined = np.ascontiguousarray(np.flip(combined, axis=1))
+
+        # Random rotation in [-10, 10] degrees
+        angle = random.uniform(-10, 10)
+        h, w = combined.shape[:2]
+        M = cv2.getRotationMatrix2D((w/2, h/2), angle, 1)
+        combined = cv2.warpAffine(combined, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT_101)
+
+        # Split back
+        frames_aug = combined[:, :, :9]  # (H, W, 9)
+        heatmaps_aug = combined[:, :, 9:]  # (H, W, 3)
+
+        # To torch tensors, normalize to [0,1], permute to (C, H, W)
+        frames_aug = frames_aug.astype(np.float32) / 255.0
+        frames_aug = torch.from_numpy(frames_aug).permute(2, 0, 1)  # (9, H, W)
+        heatmaps_aug = heatmaps_aug.astype(np.float32) / 255.0
+        heatmaps_aug = torch.from_numpy(heatmaps_aug).permute(2, 0, 1)  # (3, H, W)
+
+        return frames_aug, heatmaps_aug
+
     def __len__(self):
         return len(self.data_items)
 
@@ -121,18 +166,7 @@ class FrameHeatmapDataset(Dataset):
             heatmaps: (3, 288, 512) - 3 grayscale heatmaps, [0,1]
         """
         item = self.data_items[idx]
-
-        # Ensure same random seed for input and heatmap augmentations
-        seed = random.randint(0, 2**32)
-        
-        # Apply same augmentations to inputs
-        torch.manual_seed(seed)
-        inputs = torch.cat([self._load_image(path, False) for path in item['inputs']], dim=0)
-        
-        # Apply same augmentations to heatmaps
-        torch.manual_seed(seed)
-        heatmaps = torch.cat([self._load_image(path, True) for path in item['heatmaps']], dim=0)
-
+        inputs, heatmaps = self._load_images_synced(item['inputs'], item['heatmaps'])
         return inputs, heatmaps
 
     def get_info(self, idx):
@@ -142,7 +176,7 @@ class FrameHeatmapDataset(Dataset):
 
 if __name__ == "__main__":
     # Usage example
-    root_dir = "../dataset/Test_preprocessed"
+    root_dir = "./dataset/test"
 
     # Create dataset with augmentations
     dataset = FrameHeatmapDataset(root_dir)
@@ -163,4 +197,38 @@ if __name__ == "__main__":
         if batch_idx == 0:
             info = dataset.get_info(0)
             print(f"  Sample info: {info['match']}/{info['frame']}, start index {info['idx']}")
+
+            # --- Визуализация через cv2: единое полотно ---
+            b = 0  # первый элемент в батче
+            inp = inputs[b]  # (9, 288, 512)
+            hm = heatmaps[b]  # (3, 288, 512)
+
+            imgs = []
+            overlays = []
+            hmaps = []
+            for i in range(3):
+                # RGB кадр
+                rgb = inp[i*3:(i+1)*3].permute(1, 2, 0).cpu().numpy()  # (288, 512, 3)
+                rgb = (rgb * 255).astype(np.uint8)
+                imgs.append(rgb)
+                # Heatmap
+                hm_img = hm[i].cpu().numpy()  # (288, 512)
+                hm_img_uint8 = (hm_img * 255).astype(np.uint8)
+                hm_color = cv2.applyColorMap(hm_img_uint8, cv2.COLORMAP_JET)
+                hmaps.append(hm_color)
+                # Overlay heatmap на RGB
+                overlay = cv2.addWeighted(cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), 0.6, hm_color, 0.4, 0)
+                overlays.append(overlay)
+
+            # Собираем полотно: 3 ряда по 3 изображения
+            row1 = np.hstack([cv2.cvtColor(img, cv2.COLOR_RGB2BGR) for img in imgs])
+            row2 = np.hstack(overlays)
+            row3 = np.hstack(hmaps)
+            canvas = np.vstack([row1, row2, row3])
+
+            cv2.imshow('Batch Visualization', canvas)
+            print("Press any key in the image window to continue...")
+            cv2.waitKey(0)
+            cv2.destroyAllWindows()
+            # --- конец визуализации ---
         break
