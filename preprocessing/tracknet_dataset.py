@@ -1,41 +1,35 @@
-"""
-Frame Heatmap Dataset for PyTorch
-
-Processes frame images and corresponding heatmaps for TrackNet training.
-
-Dataset Structure:
-dataset_reorg_train/
-├── match1/
-│   ├── inputs/frame1/0.jpg,1.jpg... (512×288)
-│   └── heatmaps/frame1/0.jpg,1.jpg... (heatmaps)
-└── match2/...
-
-Output Format:
-- inputs: (9, 288, 512) - 3 RGB images concatenated, normalized to [0,1]
-- heatmaps: (3, 288, 512) - 3 grayscale heatmaps concatenated, normalized to [0,1]
-
-Author: Generated for TrackNet training
-"""
-
 import glob
 from pathlib import Path
 import torch
 import torchvision.transforms as transforms
 from PIL import Image
 from torch.utils.data import Dataset
-
+import random
 
 class FrameHeatmapDataset(Dataset):
     def __init__(self, root_dir, transform=None, heatmap_transform=None):
         """
         Args:
             root_dir: Root directory of dataset
-            transform: Transform for input images (default: normalize to [0,1])
-            heatmap_transform: Transform for heatmaps (default: normalize to [0,1])
+            transform: Transform for input images (default: includes augmentation and normalize to [0,1])
+            heatmap_transform: Transform for heatmaps (default: includes same augmentation and normalize to [0,1])
         """
         self.root_dir = Path(root_dir)
-        self.transform = transform or transforms.ToTensor()
-        self.heatmap_transform = heatmap_transform or transforms.ToTensor()
+        
+        # Define augmentation pipeline for inputs (RGB images)
+        self.transform = transform or transforms.Compose([
+            transforms.RandomHorizontalFlip(p=0.5),  # Зеркалирование лево-право с вероятностью 50%
+            transforms.RandomRotation(degrees=10),   # Поворот на ±10 градусов
+            transforms.ToTensor()                   # Нормализация в [0,1]
+        ])
+        
+        # Define augmentation pipeline for heatmaps (grayscale)
+        self.heatmap_transform = heatmap_transform or transforms.Compose([
+            transforms.RandomHorizontalFlip(p=0.5),  # Зеркалирование лево-право с вероятностью 50%
+            transforms.RandomRotation(degrees=10),   # Поворот на ±10 градусов
+            transforms.ToTensor()                   # Нормализация в [0,1]
+        ])
+        
         self.data_items = self._scan_dataset()
 
     def _scan_dataset(self):
@@ -128,7 +122,15 @@ class FrameHeatmapDataset(Dataset):
         """
         item = self.data_items[idx]
 
+        # Ensure same random seed for input and heatmap augmentations
+        seed = random.randint(0, 2**32)
+        
+        # Apply same augmentations to inputs
+        torch.manual_seed(seed)
         inputs = torch.cat([self._load_image(path, False) for path in item['inputs']], dim=0)
+        
+        # Apply same augmentations to heatmaps
+        torch.manual_seed(seed)
         heatmaps = torch.cat([self._load_image(path, True) for path in item['heatmaps']], dim=0)
 
         return inputs, heatmaps
@@ -142,7 +144,7 @@ if __name__ == "__main__":
     # Usage example
     root_dir = "../dataset/Test_preprocessed"
 
-    # Create dataset
+    # Create dataset with augmentations
     dataset = FrameHeatmapDataset(root_dir)
     print(f"Dataset size: {len(dataset)}")
 
