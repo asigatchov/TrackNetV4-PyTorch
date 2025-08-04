@@ -10,7 +10,7 @@ import torch
 
 from model.tracknet_v4 import TrackNet
 from model.vballnet_v1 import VballNetV1
-
+from model.vballnet_v1c import VballNetV1c
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Volleyball ball detection and tracking")
@@ -22,21 +22,74 @@ def parse_args():
     parser.add_argument("--only_csv", action="store_true", default=False, help="Save only CSV, skip video output")
     return parser.parse_args()
 
+def parse_model_params_from_name(model_path):
+    """
+    Parse model name for seq and grayscale mode.
+    Example: VballNetV1b_seq9_grayscale_best -> seq=9, grayscale=True
+    """
+    basename = os.path.basename(model_path)
+    seq = 3
+    grayscale = False
+    if "seq" in basename:
+        import re
+        m = re.search(r"seq(\d+)", basename)
+        if m:
+            seq = int(m.group(1))
+    if "grayscale" in basename.lower():
+        grayscale = True
+    return seq, grayscale
+
 def load_model(model_path, input_height=288, input_width=512):
     if not os.path.exists(model_path):
         raise ValueError(f"Model weights file not found: {model_path}")
 
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if 'VballNetV1' in model_path:
-       model = VballNetV1().to(device) 
+    basename = os.path.basename(model_path)
+    seq, grayscale = parse_model_params_from_name(model_path)
+
+    if 'VballNetV1c' in basename:
+            # from model.vballnet_v1c import VballNetV1c
+            if grayscale:
+                in_dim = seq
+                out_dim = seq
+            else:
+                in_dim = seq * 3
+                out_dim = seq
+            model = VballNetV1c(
+                height=input_height,
+                width=input_width,
+                in_dim=in_dim,
+                out_dim=out_dim,
+                fusion_layer_type="TypeA"
+            ).to(device)
+
+
+    elif 'VballNetV1' in basename:
+        from model.vballnet_v1 import VballNetV1
+        if grayscale:
+            in_dim = seq
+            out_dim = seq
+        else:
+            in_dim = seq * 3
+            out_dim = seq
+        model = VballNetV1(
+            height=input_height,
+            width=input_width,
+            in_dim=in_dim,
+            out_dim=out_dim,
+            fusion_layer_type="TypeA"
+        ).to(device)
     else:
+        from model.tracknet_v4 import TrackNet
         model = TrackNet().to(device)
 
     checkpoint = torch.load(model_path, map_location=device)
     state_dict = checkpoint.get('model_state_dict', checkpoint)
     model.load_state_dict(state_dict)
     model.eval()
+    # Attach seq and grayscale info for downstream use
+    model._seq = seq
+    model._grayscale = grayscale
     return model
 
 
@@ -82,16 +135,21 @@ def preprocess_frame(frame, input_height=288, input_width=512):
     frame = frame.astype(np.float32) / 255.0
     return frame
 
-def preprocess_input(frame_buffer, input_height=288, input_width=512):          
-    input_tensor = np.concatenate(frame_buffer, axis=2)
-    input_tensor = np.expand_dims(input_tensor, axis=0)
-    input_tensor = np.transpose(input_tensor, (0, 3, 1, 2))
-    # Convert numpy array to PyTorch tensor
+def preprocess_input(frame_buffer, input_height=288, input_width=512, seq=3, grayscale=False):
+    if grayscale:
+        # frame_buffer: list of (H, W, 3), convert to gray, stack as (seq, H, W)
+        gray_frames = [cv2.cvtColor((f * 255).astype(np.uint8), cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0 for f in frame_buffer]
+        input_tensor = np.stack(gray_frames, axis=0)  # (seq, H, W)
+        input_tensor = np.expand_dims(input_tensor, axis=0)  # (1, seq, H, W)
+    else:
+        # RGB: concatenate along channel axis
+        input_tensor = np.concatenate(frame_buffer, axis=2)  # (H, W, seq*3)
+        input_tensor = np.expand_dims(input_tensor, axis=0)  # (1, H, W, seq*3)
+        input_tensor = np.transpose(input_tensor, (0, 3, 1, 2))  # (1, seq*3, H, W)
     input_tensor = torch.from_numpy(input_tensor).float()
-    # Move to GPU if available
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     input_tensor = input_tensor.to(device)
-    return input_tensor 
+    return input_tensor
 
 def postprocess_output(output, threshold=0.5, input_height=288, input_width=512):
     # Now returns: (visibility, cx, cy, bbox_x, bbox_y, bbox_w, bbox_h)
@@ -136,7 +194,6 @@ def draw_track(frame, track_points, current_color=(0, 0, 255), history_color=(25
     #     cv2.rectangle(frame, (x, y), (x + box_w, y + box_h), (0, 255, 0), 2)
     return frame
 
-  
 
 def main():
     args = parse_args()
@@ -144,15 +201,17 @@ def main():
 
     model = load_model(args.model_path, input_height, input_width)
     model.eval()
-    
+    seq = getattr(model, "_seq", 3)
+    grayscale = getattr(model, "_grayscale", False)
+
     cap, frame_width, frame_height, fps, total_frames = initialize_video(args.video_path)
 
     video_basename = os.path.splitext(os.path.basename(args.video_path))[0]
     out_writer, _ = setup_output_writer(video_basename, args.output_dir, frame_width, frame_height, fps, args.only_csv)
     csv_path = setup_csv_file(video_basename, args.output_dir)
 
-    processed_frame_buffer = deque(maxlen=3)
-    frame_buffer = deque(maxlen=3)
+    processed_frame_buffer = deque(maxlen=seq)
+    frame_buffer = deque(maxlen=seq)
     track_points = deque(maxlen=args.track_length)
     prediction_buffer = {}
     frame_index = 0
@@ -165,7 +224,6 @@ def main():
 
         ret = None
         ret, frame = cap.read()
-        # ret, frame = cap.read()
         if not ret:
             break
 
@@ -174,14 +232,11 @@ def main():
         frame_buffer.append(frame)
         processed_frame_buffer.append(processed_frame)
 
-
-        if len(processed_frame_buffer) < 3:
+        if len(processed_frame_buffer) < seq:
             continue
 
-        if len(processed_frame_buffer) == 3:
-            input_tensor = preprocess_input(processed_frame_buffer)
-            # Set model to evaluation mode and make prediction
-            
+        if len(processed_frame_buffer) == seq:
+            input_tensor = preprocess_input(processed_frame_buffer, input_height, input_width, seq=seq, grayscale=grayscale)
             with torch.no_grad():
                 output = model(input_tensor)
             output = output.squeeze(0).cpu().numpy()
@@ -204,7 +259,6 @@ def main():
                     x_orig = x * frame_width / input_width
                     y_orig = y * frame_height / input_height
                     track_points.append((int(x_orig), int(y_orig)))
-                    # Scale the bounding box from input size to original frame size
                     bbox_x_orig = int(bbox_x * frame_width / input_width)
                     bbox_y_orig = int(bbox_y * frame_height / input_height)
                     bbox_w_orig = int(bbox_w * frame_width / input_width)
@@ -223,11 +277,9 @@ def main():
                     vis_frame = frame.copy()
                     vis_frame = draw_track(vis_frame, track_points, current_ball_bbox=current_ball_bbox)
                     if args.visualize:
-                        #visualize_heatmaps(output, frame_index, input_height, input_width)
                         cv2.namedWindow(
                             "Tracking", cv2.WINDOW_NORMAL
-                        )  # Create window with freedom of dimensions
-
+                        )
                         cv2.imshow('Tracking', vis_frame)
                         if cv2.waitKey(1) & 0xFF == ord('q'):
                             stop = True
@@ -235,20 +287,13 @@ def main():
                     if out_writer is not None:
                         out_writer.write(vis_frame)
 
-
-            # Remove one element from frame_buffer after each iteration
-            
-        # Calculate and print FPS
         end_time = time.time()
         batch_time = end_time - start_time
         batch_fps = 1 / batch_time if batch_time > 0 else 0
 
-        # Update progress bar (increment by 3 since we process 3 frames at a time)
         pbar.update(1)
 
-    # Close progress bar
     pbar.close()
-
     cap.release()
     if out_writer is not None:
         out_writer.release()
