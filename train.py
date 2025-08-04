@@ -242,37 +242,49 @@ class Trainer:
 
         print(f"Checkpoint saved: {filename}")
         return filepath, False
-
+    
     def plot_curves(self, epoch):
         print("Generating training plots...")
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-
+        
+        # Plot 1: Batch Loss
+        plt.figure(figsize=(6, 4))
         if self.losses['batch']:
-            ax1.plot(self.losses['steps'], self.losses['batch'], 'b-', alpha=0.3, label='Batch Loss')
+            plt.plot(self.losses['steps'], self.losses['batch'], 'b-', alpha=0.3, label='Batch Loss')
+        plt.xlabel('Batch')
+        plt.ylabel('Loss')
+        plt.title('Batch Loss')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.savefig(self.save_dir / "plots" / f"batch_loss_epoch_{epoch + 1}.png", dpi=150, bbox_inches='tight')
+        plt.close()
+
+        # Plot 2: Train and Val Loss
+        plt.figure(figsize=(6, 4))
         if self.losses['train']:
             epochs = list(range(1, len(self.losses['train']) + 1))
-            ax1.plot(epochs, self.losses['train'], 'bo-', label='Train')
-            ax1.plot(epochs, self.losses['val'], 'ro-', label='Val')
-
-        ax1.set_xlabel('Batch/Epoch')
-        ax1.set_ylabel('Loss')
-        ax1.set_title('Training Progress')
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
-
-        if self.losses['lrs']:
-            ax2.plot(self.losses['steps'], self.losses['lrs'], 'g-')
-            ax2.set_xlabel('Batch')
-            ax2.set_ylabel('Learning Rate')
-            ax2.set_title('Learning Rate')
-            ax2.set_yscale('log')
-            ax2.grid(True, alpha=0.3)
-
-        plt.tight_layout()
-        plt.savefig(self.save_dir / "plots" / f"epoch_{epoch + 1}.png", dpi=150, bbox_inches='tight')
+            plt.plot(epochs, self.losses['train'], 'bo-', label='Train Loss')
+            plt.plot(epochs, self.losses['val'], 'ro-', label='Val Loss')
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.title('Train and Validation Loss')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.savefig(self.save_dir / "plots" / f"train_val_loss_epoch_{epoch + 1}.png", dpi=150, bbox_inches='tight')
         plt.close()
-        print(f"Training plots saved for epoch \033[93m{epoch + 1}\033[0m")
 
+        # Plot 3: Learning Rate
+        plt.figure(figsize=(6, 4))
+        if self.losses['lrs']:
+            plt.plot(self.losses['steps'], self.losses['lrs'], 'g-')
+            plt.xlabel('Batch')
+            plt.ylabel('Learning Rate')
+            plt.title('Learning Rate')
+            plt.yscale('log')
+            plt.grid(True, alpha=0.3)
+        plt.savefig(self.save_dir / "plots" / f"lr_epoch_{epoch + 1}.png", dpi=150, bbox_inches='tight')
+        plt.close()
+
+        
     def validate(self):
         print("Starting validation...")
         self.model.eval()
