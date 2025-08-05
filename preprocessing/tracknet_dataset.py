@@ -87,6 +87,8 @@ class FrameHeatmapDataset(Dataset):
             return []
 
         # Generate seq-frame sequences
+
+        print(f"Processing frame {frame_name} with {len(input_files)} images seq={self.seq}...")
         return [
             {
                 'inputs': input_files[i:i + self.seq],
