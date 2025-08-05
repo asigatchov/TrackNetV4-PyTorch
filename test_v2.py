@@ -75,6 +75,25 @@ def parse_args():
     return parser.parse_args()
 
 
+def parse_model_params_from_name(model_path):
+    """
+    Parse model name for seq and grayscale mode.
+    Example: VballNetV1b_seq9_grayscale_best -> seq=9, grayscale=True
+    """
+    import os
+    basename = os.path.basename(model_path)
+    seq = 3
+    grayscale = False
+    if "seq" in basename:
+        import re
+        m = re.search(r"seq(\d+)", basename)
+        if m:
+            seq = int(m.group(1))
+    if "grayscale" in basename.lower():
+        grayscale = True
+    return seq, grayscale
+
+
 class TrackNetTester:
     def __init__(self, args):
         self.args = args
@@ -106,23 +125,52 @@ class TrackNetTester:
 
     def _load_model(self):
         print("Loading model...")
-        if 'VballNetV1' in self.args.model:
-            self.model = VballNetV1().to(self.device)
+        seq, grayscale = parse_model_params_from_name(self.args.model)
+        self.seq = seq
+        self.grayscale = grayscale
+        if 'VballNetV1c' in self.args.model:
+            # VballNetV1c with context (GRU)
+            in_dim = seq if grayscale else seq * 3
+            out_dim = seq
+            self.model = VballNetV1c(
+                height=288,
+                width=512,
+                in_dim=in_dim,
+                out_dim=out_dim,
+                fusion_layer_type="TypeA"
+            ).to(self.device)
+            self.model._model_type = "VballNetV1c"
+        elif 'VballNetV1' in self.args.model:
+            in_dim = seq if grayscale else seq * 3
+            out_dim = seq
+            self.model = VballNetV1(
+                height=288,
+                width=512,
+                in_dim=in_dim,
+                out_dim=out_dim,
+                fusion_layer_type="TypeA"
+            ).to(self.device)
         else:
             self.model = TrackNet().to(self.device)
         checkpoint = torch.load(self.args.model, map_location=self.device)
         state_dict = checkpoint.get('model_state_dict', checkpoint)
         self.model.load_state_dict(state_dict)
         self.model.eval()
-        print(f"Model loaded: {self.args.model}")
+        print(f"Model loaded: {self.args.model} (seq={seq}, grayscale={grayscale})")
 
     def _setup_data(self):
         print("Loading dataset...")
-        self.test_dataset = FrameHeatmapDataset(self.args.data)
+        seq, grayscale = parse_model_params_from_name(self.args.model)
+        
+        self.test_dataset = FrameHeatmapDataset(self.args.data, grayscale=grayscale, seq=seq)
+        
+        
         self.test_loader = DataLoader(
             self.test_dataset, batch_size=self.args.batch, shuffle=False,
             num_workers=0, pin_memory=self.device.type == 'cuda'
         )
+
+
         print(f"Dataset loaded: {len(self.test_dataset)} samples")
 
     def _extract_coordinates(self, heatmap):
@@ -364,6 +412,9 @@ Test Completed: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
         start_time = time.time()
         batch_start_idx = 0
 
+        use_gru = hasattr(self.model, '_model_type') and self.model._model_type == "VballNetV1c"
+        h0 = None
+
         with torch.no_grad():
             with tqdm(total=len(self.test_loader), desc="Testing Progress",
                       bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]') as pbar:
@@ -371,7 +422,17 @@ Test Completed: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
                     inputs = inputs.to(self.device)
                     targets = targets.to(self.device)
 
-                    outputs = self.model(inputs)
+                    if use_gru:
+                        try:
+                            outputs, hn = self.model(inputs, h0=h0)
+                            h0 = hn.detach()
+                        except Exception as e:
+                            print('Error during GRU forward pass:', e)
+                            outputs, hn = self.model(inputs, h0=None)
+                            h0 = hn.detach()
+                    else:
+                        outputs = self.model(inputs)
+
                     self._collect_predictions(outputs, targets, batch_start_idx)
 
                     batch_start_idx += inputs.shape[0]

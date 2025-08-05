@@ -207,7 +207,7 @@ class Trainer:
         self.train_loader = DataLoader(
             train_ds,
             batch_size=self.args.batch,
-            shuffle=True,
+            shuffle=False,
             num_workers=self.args.workers,
             pin_memory=self.device.type == "cuda",
         )
@@ -261,6 +261,7 @@ class Trainer:
                 out_dim=out_dim,
                 fusion_layer_type="TypeA"
             ).to(self.device)
+            self.model._model_type = "VballNetV1b"
         elif self.args.model_name == "VballNetV1c":
             self.model = VballNetV1c(
                 height=288,
@@ -269,6 +270,7 @@ class Trainer:
                 out_dim=out_dim,
                 fusion_layer_type="TypeA"
             ).to(self.device)
+            self.model._model_type = "VballNetV1c"
         else:
             raise ValueError(f"Unknown model: {self.args.model_name}")
 
@@ -389,6 +391,8 @@ class Trainer:
         vis_dir = self.save_dir / "val_vis"
         vis_dir.mkdir(exist_ok=True)
         max_vis_batches = 5  # Сколько батчей визуализировать
+        use_gru = hasattr(self.model, '_model_type') and self.model._model_type == "VballNetV1c"
+        h0 = None  # Начальное состояние GRU
         with torch.no_grad():
             val_pbar = tqdm(total=len(self.val_loader), desc="Validation", ncols=100)
             for batch_idx, (inputs, targets) in enumerate(self.val_loader):
@@ -396,7 +400,16 @@ class Trainer:
                     val_pbar.close()
                     break
                 inputs, targets = inputs.to(self.device), targets.to(self.device)
-                outputs = self.model(inputs)
+                if use_gru:
+                    try:
+                        outputs, hn = self.model(inputs, h0=h0)
+                        h0 = hn.detach()
+                    except Exception as e:
+                        outputs, hn = self.model(inputs, h0=None)
+                        h0 = hn.detach()
+                else:
+                    outputs = self.model(inputs)
+
                 loss = self.criterion(outputs, targets)
                 total_loss += loss.item()
 
@@ -449,7 +462,8 @@ class Trainer:
         print(f"Starting training on \033[93m{self.device}\033[0m")
         self.setup_data()
         self.setup_model()
-
+        use_gru = hasattr(self.model, '_model_type') and self.model._model_type == "VballNetV1c"
+        
         for epoch in range(self.start_epoch, self.args.epochs):
             if self.interrupted:
                 break
@@ -460,7 +474,7 @@ class Trainer:
             start_time = time.time()
             self.model.train()
             total_loss = 0.0
-
+            h0 = None  # Начальное состояние GRU
             train_pbar = tqdm(total=len(self.train_loader), desc=f"Training", ncols=100)
             for batch_idx, (inputs, targets) in enumerate(self.train_loader):
                 if self.interrupted:
@@ -475,7 +489,16 @@ class Trainer:
 
                 inputs, targets = inputs.to(self.device), targets.to(self.device)
                 self.optimizer.zero_grad()
-                outputs = self.model(inputs)
+                if use_gru:
+                    try:
+                        outputs, hn = self.model(inputs, h0=h0)
+                        h0 = hn.detach()
+                    except Exception as e:
+                        outputs, hn = self.model(inputs, h0=None)
+                        h0 = hn.detach()
+                else:
+                    outputs = self.model(inputs)
+
                 loss = self.criterion(outputs, targets)
                 loss.backward()
                 self.optimizer.step()

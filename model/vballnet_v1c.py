@@ -256,7 +256,7 @@ class VballNetV1c(nn.Module):
         x = self.fusion_layer(x, residual_maps)
         x = torch.sigmoid(x)
 
-        return x #, hn
+        return x , hn
 
 
 if __name__ == "__main__":

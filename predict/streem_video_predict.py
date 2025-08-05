@@ -48,22 +48,22 @@ def load_model(model_path, input_height=288, input_width=512):
     seq, grayscale = parse_model_params_from_name(model_path)
 
     if 'VballNetV1c' in basename:
-            # from model.vballnet_v1c import VballNetV1c
-            if grayscale:
-                in_dim = seq
-                out_dim = seq
-            else:
-                in_dim = seq * 3
-                out_dim = seq
-            model = VballNetV1c(
-                height=input_height,
-                width=input_width,
-                in_dim=in_dim,
-                out_dim=out_dim,
-                fusion_layer_type="TypeA"
-            ).to(device)
+        # from model.vballnet_v1c import VballNetV1c
+        if grayscale:
+            in_dim = seq
+            out_dim = seq
+        else:
+            in_dim = seq * 3
+            out_dim = seq
+        model = VballNetV1c(
+            height=input_height,
+            width=input_width,
+            in_dim=in_dim,
+            out_dim=out_dim,
+            fusion_layer_type="TypeA"
+        ).to(device)
 
-
+        model._model_type = "VballNetV1c"  
     elif 'VballNetV1' in basename:
         from model.vballnet_v1 import VballNetV1
         if grayscale:
@@ -151,10 +151,12 @@ def preprocess_input(frame_buffer, input_height=288, input_width=512, seq=3, gra
     input_tensor = input_tensor.to(device)
     return input_tensor
 
-def postprocess_output(output, threshold=0.5, input_height=288, input_width=512):
+def postprocess_output(output, threshold=0.55, input_height=288, input_width=512):
     # Now returns: (visibility, cx, cy, bbox_x, bbox_y, bbox_w, bbox_h)
     results = []
-    for frame_idx in range(3):
+    seq = output.shape[0]
+    for frame_idx in range(seq):
+    #for frame_idx in range(3):
         heatmap = output[frame_idx, :, :]
         _, binary = cv2.threshold(heatmap, threshold, 1.0, cv2.THRESH_BINARY)
         contours, _ = cv2.findContours((binary * 255).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -219,6 +221,10 @@ def main():
     # Initialize progress bar
     pbar = tqdm(total=total_frames, desc="Processing video", unit="frame")
     stop = False
+    h0 = None
+    use_gru = hasattr(model, '_model_type') and model._model_type == "VballNetV1c"
+
+    print("GRU",use_gru)
     while cap.isOpened() and stop == False:
         start_time = time.time()  # Start time for FPS calculation
 
@@ -233,15 +239,24 @@ def main():
         processed_frame_buffer.append(processed_frame)
 
         if len(processed_frame_buffer) < seq:
+            print('len:',len(processed_frame_buffer), seq)
             continue
 
         if len(processed_frame_buffer) == seq:
             input_tensor = preprocess_input(processed_frame_buffer, input_height, input_width, seq=seq, grayscale=grayscale)
             with torch.no_grad():
-                output = model(input_tensor)
-            output = output.squeeze(0).cpu().numpy()
-
+                if use_gru:
+                    output, hn = model(input_tensor, h0=h0)
+                    h0 = hn.detach()  # сохраняем состояние
+                else:
+                    output = model(input_tensor)  # VballNetV1 просто возвращает output
+                    # h0 не используется, не обновляем
+                
+                output = output.squeeze(0).cpu().numpy()
+            
             predictions = postprocess_output(output, input_height=input_height, input_width=input_width)
+            
+            print('run prediction:' , len(predictions), 'frames')
 
             # Process all predictions in the list
             for idx, pred in enumerate(predictions):
