@@ -44,7 +44,9 @@ from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
 from model.loss import WeightedBinaryCrossEntropy
 from preprocessing.tracknet_dataset import FrameHeatmapDataset
-
+import os
+import numpy as np
+import cv2
 # Choose the version of TrackNet model you want to use
 from model.tracknet_v4 import TrackNet
 from model.vballnet_v1 import VballNetV1 as VballNetV1b
@@ -192,7 +194,7 @@ class Trainer:
             seq=self.args.seq,
             grayscale=self.args.grayscale
         )
-        print(f"Dataset loaded: \033[94m{len(dataset)}\033[0m samples")
+        print(f"Dataset loaded: \033[94m{len(dataset)}\033[0m samples {self.args.grayscale} sequences  {self.args.seq}")
 
         print("Splitting dataset...")
         torch.manual_seed(self.args.seed)
@@ -384,6 +386,9 @@ class Trainer:
         print("Starting validation...")
         self.model.eval()
         total_loss = 0.0
+        vis_dir = self.save_dir / "val_vis"
+        vis_dir.mkdir(exist_ok=True)
+        max_vis_batches = 5  # Сколько батчей визуализировать
         with torch.no_grad():
             val_pbar = tqdm(total=len(self.val_loader), desc="Validation", ncols=100)
             for batch_idx, (inputs, targets) in enumerate(self.val_loader):
@@ -394,6 +399,43 @@ class Trainer:
                 outputs = self.model(inputs)
                 loss = self.criterion(outputs, targets)
                 total_loss += loss.item()
+
+                # --- Визуализация ---
+                if batch_idx < max_vis_batches:
+                    # inputs: (B, C, H, W), outputs: (B, seq, H, W), targets: (B, seq, H, W)
+                    inp = inputs[0].detach().cpu()  # (C, H, W)
+                    pred = outputs[0].detach().cpu()  # (seq, H, W)
+                    gt = targets[0].detach().cpu()   # (seq, H, W)
+                    # Определяем число кадров для визуализации
+                    n_vis = min(pred.shape[0], gt.shape[0], 9)
+                    for i in range(n_vis):
+                        # Входной кадр (если grayscale - берем 1 канал, если RGB - 3)
+                        if inp.shape[0] == pred.shape[0]:
+                            # grayscale
+                            rgb = np.stack([inp[i].numpy()]*3, axis=2)
+                        else:
+                            rgb = inp[i*3:(i+1)*3].permute(1, 2, 0).numpy()
+                        rgb = (rgb * 255).astype(np.uint8)
+                        # Предсказанный heatmap
+                        pred_hm = pred[i].numpy()
+                        pred_hm = (pred_hm * 255).astype(np.uint8)
+                        pred_hm_color = cv2.applyColorMap(pred_hm, cv2.COLORMAP_JET)
+                        # Эталонный heatmap
+                        gt_hm = gt[i].numpy()
+                        gt_hm = (gt_hm * 255).astype(np.uint8)
+                        gt_hm_color = cv2.applyColorMap(gt_hm, cv2.COLORMAP_JET)
+                        # Overlay
+                        overlay_pred = cv2.addWeighted(cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), 0.6, pred_hm_color, 0.4, 0)
+                        overlay_gt = cv2.addWeighted(cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), 0.6, gt_hm_color, 0.4, 0)
+                        # Собираем в одну картинку
+                        vis_img = np.vstack([
+                            cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR),
+                            overlay_pred,
+                            overlay_gt
+                        ])
+                        vis_path = vis_dir / f"val_batch{batch_idx}_frame{i}.jpg"
+                        cv2.imwrite(str(vis_path), vis_img)
+                # --- конец визуализации ---
 
                 val_pbar.update(1)
                 val_pbar.set_postfix({"loss": f"{loss.item():.6f}"})
