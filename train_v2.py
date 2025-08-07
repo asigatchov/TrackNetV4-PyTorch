@@ -268,7 +268,6 @@ class Trainer:
                 width=512,
                 in_dim=in_dim,
                 out_dim=out_dim,
-                fusion_layer_type="TypeA"
             ).to(self.device)
             self.model._model_type = "VballNetV1c"
         else:
@@ -463,7 +462,7 @@ class Trainer:
         self.setup_data()
         self.setup_model()
         use_gru = hasattr(self.model, '_model_type') and self.model._model_type == "VballNetV1c"
-        
+
         for epoch in range(self.start_epoch, self.args.epochs):
             if self.interrupted:
                 break
