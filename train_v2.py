@@ -51,7 +51,7 @@ import cv2
 from model.tracknet_v4 import TrackNet
 from model.vballnet_v1 import VballNetV1 as VballNetV1b
 from model.vballnet_v1c import VballNetV1c
-
+from model.vballnet_v1d import VballNetV1d
 def parse_args():
     parser = argparse.ArgumentParser(description="TrackNet Training")
     parser.add_argument("--data", type=str, required=True)
@@ -82,7 +82,7 @@ def parse_args():
     parser.add_argument("--plot", type=int, default=1)
     parser.add_argument("--out", type=str, default="outputs")
     parser.add_argument("--name", type=str, default="exp")
-    parser.add_argument('--model_name', type=str, default='TrackNet', choices=['TrackNet', 'VballNetV1b', 'VballNetV1c'])
+    parser.add_argument('--model_name', type=str, default='TrackNet', choices=['TrackNet', 'VballNetV1b', 'VballNetV1c', 'VballNetV1d'])
     parser.add_argument('--grayscale', action='store_true')
     parser.add_argument('--seq', type=int, default=3)
 
@@ -262,6 +262,11 @@ class Trainer:
                 fusion_layer_type="TypeA"
             ).to(self.device)
             self.model._model_type = "VballNetV1b"
+
+        elif self.args.model_name == "VballNetV1d":
+            self.model = VballNetV1d( ).to(self.device)
+            self.model._model_type = "VballNetV1d"
+       
         elif self.args.model_name == "VballNetV1c":
             self.model = VballNetV1c(
                 height=288,

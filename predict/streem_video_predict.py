@@ -11,6 +11,7 @@ import torch
 from model.tracknet_v4 import TrackNet
 from model.vballnet_v1 import VballNetV1
 from model.vballnet_v1c import VballNetV1c
+from model.vballnet_v1d import VballNetV1d
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Volleyball ball detection and tracking")
@@ -64,6 +65,23 @@ def load_model(model_path, input_height=288, input_width=512):
         ).to(device)
 
         model._model_type = "VballNetV1c"  
+
+    elif 'VballNetV1d' in basename:
+        if grayscale:
+            in_dim = seq
+            out_dim = seq
+        else:
+            in_dim = seq * 3
+            out_dim = seq
+
+        model = VballNetV1d(
+            height=input_height,
+            width=input_width,
+            in_dim=in_dim,
+            out_dim=out_dim
+        ).to(device)
+        model._model_type = "VballNetV1d"  
+    
     elif 'VballNetV1' in basename:
         from model.vballnet_v1 import VballNetV1
         if grayscale:
