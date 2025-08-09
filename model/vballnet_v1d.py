@@ -10,16 +10,16 @@ class VballNetV1d(nn.Module):
     Оптимизирована для ONNX и CPU с fps > 60
     """
     
-    def __init__(self, in_channels=9, out_channels=9, img_height=288, img_width=512):
+    def __init__(self, in_dim=9, out_dim=9, height=288, width=512):
         super().__init__()
         
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.img_height = img_height
-        self.img_width = img_width
+        self.in_dim = in_dim
+        self.out_dim = out_dim
+        self.img_height = height
+        self.img_width = width
         
         # Encoder (downsampling path)
-        self.enc1 = self._make_encoder_block(in_channels, 32)
+        self.enc1 = self._make_encoder_block(in_dim, 32)
         self.pool1 = nn.MaxPool2d(2)
         
         self.enc2 = self._make_encoder_block(32, 64)
@@ -48,30 +48,30 @@ class VballNetV1d(nn.Module):
         self.dec1 = self._make_decoder_block(64, 32)
         
         # Final output
-        self.final_conv = nn.Conv2d(32, out_channels, kernel_size=1)
+        self.final_conv = nn.Conv2d(32, out_dim, kernel_size=1)
         
         # Инициализация весов
         self._initialize_weights()
     
-    def _make_encoder_block(self, in_channels, out_channels):
+    def _make_encoder_block(self, in_dim, out_dim):
         """Создание блока энкодера"""
         return nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
-            nn.BatchNorm2d(out_channels),
+            nn.Conv2d(in_dim, out_dim, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_dim),
             nn.ReLU(inplace=True),
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
-            nn.BatchNorm2d(out_channels),
+            nn.Conv2d(out_dim, out_dim, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_dim),
             nn.ReLU(inplace=True),
         )
     
-    def _make_decoder_block(self, in_channels, out_channels):
+    def _make_decoder_block(self, in_dim, out_dim):
         """Создание блока декодера"""
         return nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
-            nn.BatchNorm2d(out_channels),
+            nn.Conv2d(in_dim, out_dim, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_dim),
             nn.ReLU(inplace=True),
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
-            nn.BatchNorm2d(out_channels),
+            nn.Conv2d(out_dim, out_dim, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_dim),
             nn.ReLU(inplace=True),
         )
     
@@ -138,8 +138,8 @@ class VballNetV1d(nn.Module):
 # Создание модели
 def create_model():
     model = VballNetV1d(
-        in_channels=9,  # 9 grayscale frames
-        out_channels=9,  # 9 heatmaps
+        in_dim=9,  # 9 grayscale frames
+        out_dim=9,  # 9 heatmaps
         img_height=288,
         img_width=512
     )
@@ -151,8 +151,8 @@ if __name__ == "__main__":
     
     # Параметры
     BATCH_SIZE = 1
-    IN_CHANNELS = 9
-    OUT_CHANNELS = 9
+    in_dim = 9
+    out_dim = 9
     HEIGHT = 288
     WIDTH = 512
     
@@ -164,13 +164,13 @@ if __name__ == "__main__":
     print(f"🧮 Количество параметров: {total_params:,}")
     
     # Тестовый ввод
-    x_test = torch.randn(BATCH_SIZE, IN_CHANNELS, HEIGHT, WIDTH)
+    x_test = torch.randn(BATCH_SIZE, in_dim, HEIGHT, WIDTH)
     
     # Проверка forward
     with torch.no_grad():
         output = model(x_test)
         print(f"✅ Forward прошёл успешно. Выход: {output.shape}")
-        assert output.shape == (BATCH_SIZE, OUT_CHANNELS, HEIGHT, WIDTH), "Неверная форма выхода"
+        assert output.shape == (BATCH_SIZE, out_dim, HEIGHT, WIDTH), "Неверная форма выхода"
     
     # Экспорт в ONNX
     print("\n📦 Экспорт модели в ONNX...")

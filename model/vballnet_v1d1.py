@@ -2,17 +2,14 @@ import torch
 import torch.nn as nn
 import numpy as np
 import time
-import torch
-import torch.nn as nn
-import numpy as np
-import time
+
 
 class VballNetV1d(nn.Module):
     def __init__(self, height=288, width=512, in_dim=9, out_dim=9):
         super().__init__()
         self.in_dim = in_dim
         self.out_dim = out_dim
-        self.hidden_size = 128  # Увеличено
+        self.hidden_size = 1024  # Увеличено до 1024 для поддержки (64, 8, 8)
 
         # Stem: (B*T, 1, 288, 512) → (B*T, 32, 144, 256)
         self.stem = nn.Sequential(
@@ -28,41 +25,51 @@ class VballNetV1d(nn.Module):
             nn.ReLU(inplace=True),
         )
 
-        # ✅ Фиксированный AvgPool2d вместо AdaptiveAvgPool2d
-        # Вход после stem: (144, 256)
-        # Цель: (8, 8) → kernel = (144//8, 256//8) = (18, 32)
-        self.spatial_pool = nn.AvgPool2d(kernel_size=(18, 32), stride=(18, 32))  # → (B*T, 32, 8, 8)
+        # Фиксированный AvgPool2d
+        self.spatial_pool = nn.AvgPool2d(
+            kernel_size=(18, 32), stride=(18, 32)
+        )  # → (B*T, 32, 8, 8)
 
         # Сжатие
-        self.feature_flatten = nn.Linear(32 * 8 * 8, self.hidden_size)  # 2048 → 128
+        self.feature_flatten = nn.Linear(32 * 8 * 8, self.hidden_size)  # 2048 → 1024
 
-        # Временная обработка
-        self.temporal_conv = nn.Conv1d(self.hidden_size, self.hidden_size, kernel_size=3, padding=1)
+        # Временная обработка с ONNX-совместимым подходом
+        self.temporal_conv1 = nn.Conv2d(
+            self.hidden_size, self.hidden_size, kernel_size=3, padding=1
+        )
+        self.temporal_conv2 = nn.Conv2d(
+            self.hidden_size, self.hidden_size, kernel_size=3, padding=1
+        )
         self.temporal_act = nn.ReLU(inplace=True)
 
-        # Декодер
-        self.hidden_to_features = nn.Linear(self.hidden_size, 32 * 8 * 8)  # 128 → 2048
-        self.feature_unflatten = nn.Unflatten(1, (32, 8, 8))
+        # Декодер с увеличенными каналами
+        self.hidden_to_features = nn.Linear(self.hidden_size, 64 * 8 * 8)  # 1024 → 4096
+        self.feature_unflatten = nn.Unflatten(1, (64, 8, 8))
 
-        # Апскейл
         self.upsample = nn.Sequential(
-            nn.ConvTranspose2d(32, 32, kernel_size=4, stride=2, padding=1),  # 8 → 16
+            nn.ConvTranspose2d(64, 64, kernel_size=4, stride=2, padding=1),  # 8 → 16
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.ConvTranspose2d(64, 64, kernel_size=4, stride=2, padding=1),  # 16 → 32
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.ConvTranspose2d(64, 64, kernel_size=4, stride=2, padding=1),  # 32 → 64
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.ConvTranspose2d(64, 32, kernel_size=4, stride=2, padding=1),  # 64 → 128
             nn.BatchNorm2d(32),
             nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(32, 32, kernel_size=4, stride=2, padding=1),  # 16 → 32
-            nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(32, 16, kernel_size=4, stride=2, padding=1),  # 32 → 64
-            nn.BatchNorm2d(16),
-            nn.ReLU(inplace=True),
-            nn.Upsample(size=(288, 512), mode='nearest'),
+            nn.Upsample(size=(288, 512), mode="nearest"),
         )
 
         # Skip-connection
-        self.skip_conv = nn.Conv2d(24, 16, kernel_size=1)  # обучаемый
+        self.skip_conv = nn.Conv2d(
+            24, 32, kernel_size=1
+        )  # Обновлено для соответствия 32 каналам
 
         # Финальный слой
-        self.final_conv = nn.Conv2d(16, 1, kernel_size=1)
+        self.final_conv = nn.Conv2d(32, 1, kernel_size=1)
+
     def forward(self, x):
         B, T, H, W = x.shape
 
@@ -73,28 +80,43 @@ class VballNetV1d(nn.Module):
 
         # Skip connection: сохраняем до пулинга (24 каналов, 288x512)
         x_stem = self.stem[:4](x)  # (B*T, 24, 288, 512)
-        x = self.stem[4:](x_stem)   # (B*T, 32, 144, 256)
+        x = self.stem[4:](x_stem)  # (B*T, 32, 144, 256)
 
         # Пространственное сжатие
         x = self.spatial_pool(x)  # → (B*T, 32, 8, 8)
-        x = x.view(B * T, -1)     # flatten: (B*T, 2048)
-        x = self.feature_flatten(x)  # (B*T, 128)
-        x = x.view(B, T, -1)      # (B, T, 128)
+        x = x.view(B * T, -1)  # flatten: (B*T, 2048)
+        x = self.feature_flatten(x)  # (B*T, 1024)
+        x = x.view(B, T, -1)  # (B, T, 1024)
 
-        # Временная обработка
-        x = x.transpose(1, 2)  # (B, 128, T)
-        x = self.temporal_conv(x)
-        x = self.temporal_act(x)
-        x = x.transpose(1, 2)  # (B, T, 128)
+        # Временная обработка (сохранение последовательности)
+        batch_size = x.size(0)
+        h_t = torch.zeros(batch_size, self.hidden_size, 1, 1).to(x.device)
+        lstm_out = []
 
-        # Распаковка
-        x = x.reshape(B * T, -1)  # (B*T, 128)
-        x = self.hidden_to_features(x)  # (B*T, 2048)
-        x = self.feature_unflatten(x)  # (B*T, 32, 8, 8)
-        x = self.upsample(x)  # (B*T, 16, 288, 512)
+        for t in range(T):
+            h_prev = h_t if t > 0 else torch.zeros_like(h_t)
+            x_t = (
+                x[:, t : t + 1, :]
+                .transpose(1, 2)
+                .view(batch_size, self.hidden_size, 1, 1)
+            )
+            h_t = self.temporal_conv1(h_prev + x_t)
+            h_t = self.temporal_act(h_t)
+            h_t = self.temporal_conv2(h_t)
+            h_t = self.temporal_act(h_t)
+            lstm_out.append(h_t)
 
-        # Skip-connection: 24 → 16 каналов (обучаемый слой)
-        x_skip = self.skip_conv(x_stem)  # (B*T, 16, 288, 512)
+        x = torch.stack(lstm_out, dim=1)  # (B, T, hidden_size, 1, 1)
+        x = x.view(B * T, self.hidden_size, 1, 1)  # (B*T, hidden_size, 1, 1)
+
+        # Распаковка и восстановление пространственных размеров
+        x = x.view(B * T, -1)  # (B*T, hidden_size)
+        x = self.hidden_to_features(x)  # (B*T, 64*8*8)
+        x = self.feature_unflatten(x)  # (B*T, 64, 8, 8)
+        x = self.upsample(x)  # (B*T, 32, 288, 512)
+
+        # Skip-connection: 24 → 32 каналов
+        x_skip = self.skip_conv(x_stem)  # (B*T, 32, 288, 512)
         x = x + x_skip  # residual
 
         # Финальный слой
@@ -105,10 +127,10 @@ class VballNetV1d(nn.Module):
         if self.out_dim > T:
             x = torch.cat([x, x[:, -1:].expand(B, self.out_dim - T, 288, 512)], dim=1)
         elif self.out_dim < T:
-            x = x[:, :self.out_dim]
+            x = x[:, : self.out_dim]
 
         return x
-    
+
 
 if __name__ == "__main__":
     print("🚀 VballNetTiny_ONNX — модель для ONNX и высокой скорости на CPU\n")
@@ -126,12 +148,9 @@ if __name__ == "__main__":
     print(f"🔧 Устройство: {device}")
 
     # Инициализация модели
-    model = VballNetV1d(
-        height=HEIGHT,
-        width=WIDTH,
-        in_dim=IN_DIM,
-        out_dim=OUT_DIM
-    ).to(device)
+    model = VballNetV1d(height=HEIGHT, width=WIDTH, in_dim=IN_DIM, out_dim=OUT_DIM).to(
+        device
+    )
 
     # Подсчёт параметров
     total_params = sum(p.numel() for p in model.parameters())
@@ -145,21 +164,21 @@ if __name__ == "__main__":
         try:
             output = model(x_test)
             print(f"✅ Forward прошёл успешно. Выход: {output.shape}")
-            assert output.shape == (BATCH_SIZE, OUT_DIM, HEIGHT, WIDTH), "Неверная форма выхода"
+            assert output.shape == (
+                BATCH_SIZE,
+                OUT_DIM,
+                HEIGHT,
+                WIDTH,
+            ), "Неверная форма выхода"
         except Exception as e:
             print(f"❌ Ошибка в forward: {e}")
             raise
 
-    # ---------------------------------------------
     # 📦 ЭКСПОРТ В ONNX
-    # ---------------------------------------------
     print(f"\n📦 Экспорт модели в ONNX: {ONNX_PATH}")
 
     model.eval()
-    dynamic_axes = {
-        'input': {0: 'batch', 1: 'time'},
-        'output': {0: 'batch', 1: 'time'}
-    }
+    dynamic_axes = {"input": {0: "batch", 1: "time"}, "output": {0: "batch", 1: "time"}}
 
     try:
         torch.onnx.export(
@@ -169,45 +188,43 @@ if __name__ == "__main__":
             export_params=True,
             opset_version=13,
             do_constant_folding=True,
-            input_names=['input'],
-            output_names=['output'],
+            input_names=["input"],
+            output_names=["output"],
             dynamic_axes=dynamic_axes,
-            verbose=False
+            verbose=False,
         )
         print(f"✅ Успешно экспортировано в {ONNX_PATH}")
     except Exception as e:
         print(f"❌ Ошибка экспорта в ONNX: {e}")
         raise
 
-    # ---------------------------------------------
     # ⏱️ ЗАМЕР СКОРОСТИ В ONNX RUNTIME
-    # ---------------------------------------------
     try:
         import onnxruntime as ort
 
         print("\n⏱️  Запуск ONNX Runtime (CPU) для замера скорости...")
 
-        # Опции для оптимизации
         sess_options = ort.SessionOptions()
-        sess_options.intra_op_num_threads = 4  # настрой под число ядер
-        sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        sess_options.intra_op_num_threads = 4
+        sess_options.graph_optimization_level = (
+            ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        )
 
-        ort_session = ort.InferenceSession(ONNX_PATH, sess_options=sess_options, providers=['CPUExecutionProvider'])
+        ort_session = ort.InferenceSession(
+            ONNX_PATH, sess_options=sess_options, providers=["CPUExecutionProvider"]
+        )
 
         print(f"✅ ONNX Runtime запущен. Провайдер: {ort_session.get_providers()[0]}")
 
-        # Подготовка данных
         x_np = np.random.randn(BATCH_SIZE, IN_DIM, HEIGHT, WIDTH).astype(np.float32)
 
-        # Прогрев
         for _ in range(10):
-            ort_session.run(None, {'input': x_np})
+            ort_session.run(None, {"input": x_np})
 
-        # Замер
         n_runs = 100
         start = time.time()
         for _ in range(n_runs):
-            ort_session.run(None, {'input': x_np})
+            ort_session.run(None, {"input": x_np})
         end = time.time()
 
         avg_time_ms = (end - start) / n_runs * 1000

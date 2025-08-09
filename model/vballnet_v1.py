@@ -70,7 +70,7 @@ class MotionPrompt(nn.Module):
             grayscale_video_seq = torch.einsum("btcwh,c->btwh", norm_seq, weights)
         else:  # grayscale mode
             grayscale_video_seq = norm_seq[:, :, 0, :, :]  # Single channel per frame
-
+#            grayscale_video_seq = video_seq[:, :, 0, :, :]  # Single channel per frame
         # Compute central differences for frames t=0 to t=num_frames-1
         frame_diffs = []
         for t in range(self.num_frames):

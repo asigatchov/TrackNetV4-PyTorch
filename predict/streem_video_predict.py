@@ -11,7 +11,7 @@ import torch
 from model.tracknet_v4 import TrackNet
 from model.vballnet_v1 import VballNetV1
 from model.vballnet_v1c import VballNetV1c
-from model.vballnet_v1d import VballNetV1d
+from model.vballnet_v1d1 import VballNetV1d
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Volleyball ball detection and tracking")

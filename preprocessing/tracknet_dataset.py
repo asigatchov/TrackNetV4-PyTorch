@@ -105,8 +105,6 @@ class FrameHeatmapDataset(Dataset):
         return sorted(glob.glob(str(directory / "*.jpg")),
                       key=lambda x: int(Path(x).stem))
 
-
-
     def _load_image(self, image_path, is_heatmap=False):
         """Load and transform image"""
         try:
@@ -121,7 +119,6 @@ class FrameHeatmapDataset(Dataset):
             print(f"Failed to load image: {image_path}")
             channels = 1 if is_heatmap else 3
             return torch.zeros(channels, 288, 512)
-
 
     def _load_images_synced(self, input_paths, heatmap_paths):
         """
@@ -182,6 +179,7 @@ class FrameHeatmapDataset(Dataset):
         """
         item = self.data_items[idx]
         inputs, heatmaps = self._load_images_synced(item['inputs'], item['heatmaps'])
+        #inputs, heatmaps = self._load_image(item["inputs"], item["heatmaps"])
         return inputs, heatmaps
 
     def get_info(self, idx):

@@ -43,15 +43,17 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
 from model.loss import WeightedBinaryCrossEntropy
-from preprocessing.tracknet_dataset import FrameHeatmapDataset
+from preprocessing.tracknet_datasetv2 import FrameHeatmapDataset
 import os
 import numpy as np
 import cv2
 # Choose the version of TrackNet model you want to use
 from model.tracknet_v4 import TrackNet
-from model.vballnet_v1 import VballNetV1 as VballNetV1b
+# from model.vballnet_v1 import VballNetV1 as VballNetV1a
+from model.vballnet_v1a import VballNetV1 as VballNetV1a
+
 from model.vballnet_v1c import VballNetV1c
-from model.vballnet_v1d import VballNetV1d
+from model.vballnet_v1d1 import VballNetV1d
 def parse_args():
     parser = argparse.ArgumentParser(description="TrackNet Training")
     parser.add_argument("--data", type=str, required=True)
@@ -82,7 +84,12 @@ def parse_args():
     parser.add_argument("--plot", type=int, default=1)
     parser.add_argument("--out", type=str, default="outputs")
     parser.add_argument("--name", type=str, default="exp")
-    parser.add_argument('--model_name', type=str, default='TrackNet', choices=['TrackNet', 'VballNetV1b', 'VballNetV1c', 'VballNetV1d'])
+    parser.add_argument(
+        "--model_name",
+        type=str,
+        default="TrackNet",
+        choices=["TrackNet", "VballNetV1a", "VballNetV1b", "VballNetV1c", "VballNetV1d"],
+    )
     parser.add_argument('--grayscale', action='store_true')
     parser.add_argument('--seq', type=int, default=3)
 
@@ -253,20 +260,20 @@ class Trainer:
 
         if self.args.model_name == "TrackNet":
             self.model = TrackNet().to(self.device)
-        elif self.args.model_name == "VballNetV1b":
-            self.model = VballNetV1b(
+        elif self.args.model_name == "VballNetV1a":
+            self.model = VballNetV1a(
                 height=288,
                 width=512,
                 in_dim=in_dim,
                 out_dim=out_dim,
                 fusion_layer_type="TypeA"
             ).to(self.device)
-            self.model._model_type = "VballNetV1b"
+            self.model._model_type = "VballNetV1a"
 
         elif self.args.model_name == "VballNetV1d":
             self.model = VballNetV1d( ).to(self.device)
             self.model._model_type = "VballNetV1d"
-       
+
         elif self.args.model_name == "VballNetV1c":
             self.model = VballNetV1c(
                 height=288,
