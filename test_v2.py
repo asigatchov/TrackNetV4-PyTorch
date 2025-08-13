@@ -54,6 +54,7 @@ from model.tracknet_v4 import TrackNet
 from model.vballnet_v1 import VballNetV1 
 from model.vballnet_v1c import VballNetV1c 
 from model.vballnet_v1d import VballNetV1d 
+from model.vballnetfast_v1 import VballNetFastV1  # Import the fast version
 
 
 def parse_args():
@@ -151,6 +152,20 @@ class TrackNetTester:
                 out_dim=out_dim,
                 fusion_layer_type="TypeA"
             ).to(self.device)
+        elif 'VballNetFastV1' in self.args.model:
+            in_dim = seq if grayscale else seq * 3
+            out_dim = seq
+            self.model = VballNetFastV1(
+                input_height=288,
+                input_width=512,
+                in_dim=in_dim,
+                out_dim=out_dim,
+                channels=[8, 16, 32],
+                bottleneck_channels=64,
+                dropout_p=0.2
+            ).to(self.device)
+            self.model._model_type = "VballNetFastV1"
+
         else:
             self.model = TrackNet().to(self.device)
         checkpoint = torch.load(self.args.model, map_location=self.device)
