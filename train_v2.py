@@ -54,6 +54,9 @@ from model.vballnet_v1a import VballNetV1 as VballNetV1a
 
 from model.vballnet_v1c import VballNetV1c
 from model.vballnet_v1d1 import VballNetV1d
+from model.vballnetfast_v1 import VballNetFastV1  # Import the fast version
+from model.vballnetfast_v2 import VballNetFastV2  # Import the fast version
+
 def parse_args():
     parser = argparse.ArgumentParser(description="TrackNet Training")
     parser.add_argument("--data", type=str, required=True)
@@ -88,7 +91,7 @@ def parse_args():
         "--model_name",
         type=str,
         default="TrackNet",
-        choices=["TrackNet", "VballNetV1a", "VballNetV1b", "VballNetV1c", "VballNetV1d"],
+        choices=["TrackNet", "VballNetV1a", "VballNetV1b", "VballNetV1c", "VballNetV1d", "VballNetFastV1","VballNetFastV2"],
     )
     parser.add_argument('--grayscale', action='store_true')
     parser.add_argument('--seq', type=int, default=3)
@@ -282,6 +285,31 @@ class Trainer:
                 out_dim=out_dim,
             ).to(self.device)
             self.model._model_type = "VballNetV1c"
+
+        elif 'VballNetFastV1' in self.args.model_name:
+            self.model = VballNetFastV1(
+                input_height=288,
+                input_width=512,
+                in_dim=in_dim,
+                out_dim=out_dim,
+                channels=[8, 16, 32],
+                bottleneck_channels=64,
+                dropout_p=0.2
+            ).to(self.device)
+            self.model._model_type = "VballNetFastV1"
+        
+        elif 'VballNetFastV2' in self.args.model_name:
+            self.model = VballNetFastV2(
+                input_height=288,
+                input_width=512,
+                in_dim=in_dim,
+                out_dim=out_dim,
+                channels=[8, 16, 32],
+                bottleneck_channels=64,
+                dropout_p=0.2
+            ).to(self.device)
+            self.model._model_type = "VballNetFastV2"
+
         else:
             raise ValueError(f"Unknown model: {self.args.model_name}")
 
