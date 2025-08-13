@@ -1,7 +1,7 @@
 import torch
 import onnx
 import argparse
-from model.vballnet_v1 import (
+from model.vballnet_v1a import (
     VballNetV1,
 )  # Replace with the actual file/module where VballNetV1 is defined
 

@@ -7,8 +7,7 @@ python train.py --data dataset/train --batch 8 --epochs 50 --lr 0.001
 python train.py --data dataset/train --optimizer Adam --lr 0.001 --batch 16 --plot 10
 python train.py --resume best.pth --data dataset/train --lr 0.0001
 python train.py --resume checkpoint.pth --data dataset/train --optimizer Adam --epochs 100
-python train.py --data training_data/train --batch 3 --lr 1  --optimizer Adadelta
-
+python train.py --data training_data/train --batch 3 --lr 1 --optimizer Adadelta
 
 Parameters:
 --data: Training dataset path (required)
@@ -47,13 +46,14 @@ from preprocessing.tracknet_datasetv3 import FrameHeatmapDataset
 import os
 import numpy as np
 import cv2
+
 # Choose the version of TrackNet model you want to use
 from model.tracknet_v4 import TrackNet
-# from model.vballnet_v1 import VballNetV1 as VballNetV1a
 from model.vballnet_v1a import VballNetV1 as VballNetV1a
-
 from model.vballnet_v1c import VballNetV1c
-from model.vballnet_v1d1 import VballNetV1d
+from model.vballnet_v1d import VballNetV1d
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="TrackNet Training")
     parser.add_argument("--data", type=str, required=True)
@@ -88,10 +88,16 @@ def parse_args():
         "--model_name",
         type=str,
         default="TrackNet",
-        choices=["TrackNet", "VballNetV1a", "VballNetV1b", "VballNetV1c", "VballNetV1d"],
+        choices=[
+            "TrackNet",
+            "VballNetV1a",
+            "VballNetV1b",
+            "VballNetV1c",
+            "VballNetV1d",
+        ],
     )
-    parser.add_argument('--grayscale', action='store_true')
-    parser.add_argument('--seq', type=int, default=3)
+    parser.add_argument("--grayscale", action="store_true")
+    parser.add_argument("--seq", type=int, default=3)
 
     args = parser.parse_args()
 
@@ -130,9 +136,12 @@ class Trainer:
         print("Setting up output directories...")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         suffix = "_resumed" if self.args.resume else ""
-        # Формируем составное имя модели для папки и чекпоинтов
-        model_tag = f"{self.args.model_name}_seq{self.args.seq}" + ("_grayscale" if self.args.grayscale else "")
-        self.save_dir = Path(self.args.out) / f"{self.args.name}_{model_tag}{suffix}_{timestamp}"
+        model_tag = f"{self.args.model_name}_seq{self.args.seq}" + (
+            "_grayscale" if self.args.grayscale else ""
+        )
+        self.save_dir = (
+            Path(self.args.out) / f"{self.args.name}_{model_tag}{suffix}_{timestamp}"
+        )
         self.save_dir.mkdir(parents=True, exist_ok=True)
         (self.save_dir / "checkpoints").mkdir(exist_ok=True)
         (self.save_dir / "plots").mkdir(exist_ok=True)
@@ -197,11 +206,11 @@ class Trainer:
     def setup_data(self):
         print("Loading dataset...")
         dataset = FrameHeatmapDataset(
-            self.args.data,
-            seq=self.args.seq,
-            grayscale=self.args.grayscale
+            self.args.data, seq=self.args.seq, grayscale=self.args.grayscale
         )
-        print(f"Dataset loaded: \033[94m{len(dataset)}\033[0m samples {self.args.grayscale} sequences  {self.args.seq}")
+        print(
+            f"Dataset loaded: \033[94m{len(dataset)}\033[0m samples {self.args.grayscale} sequences  {self.args.seq}"
+        )
 
         print("Splitting dataset...")
         torch.manual_seed(self.args.seed)
@@ -214,16 +223,18 @@ class Trainer:
         self.train_loader = DataLoader(
             train_ds,
             batch_size=self.args.batch,
-            shuffle=False,
-            num_workers=self.args.workers,
+            shuffle=True,  # Enable shuffle for training
+            num_workers=0,  # No workers since data is in RAM
             pin_memory=self.device.type == "cuda",
+            prefetch_factor=None,  # Not needed with num_workers=0
         )
         self.val_loader = DataLoader(
             val_ds,
             batch_size=self.args.batch,
             shuffle=False,
-            num_workers=self.args.workers,
+            num_workers=0,  # No workers since data is in RAM
             pin_memory=self.device.type == "cuda",
+            prefetch_factor=None,
         )
         print(
             f"Data loaders ready - Train: \033[94m{len(train_ds)}\033[0m | Val: \033[94m{len(val_ds)}\033[0m"
@@ -266,12 +277,12 @@ class Trainer:
                 width=512,
                 in_dim=in_dim,
                 out_dim=out_dim,
-                fusion_layer_type="TypeA"
+                fusion_layer_type="TypeA",
             ).to(self.device)
             self.model._model_type = "VballNetV1a"
 
         elif self.args.model_name == "VballNetV1d":
-            self.model = VballNetV1d( ).to(self.device)
+            self.model = VballNetV1d().to(self.device)
             self.model._model_type = "VballNetV1d"
 
         elif self.args.model_name == "VballNetV1c":
@@ -311,8 +322,9 @@ class Trainer:
     def save_checkpoint(self, epoch, train_loss, val_loss, is_emergency=False):
         print("Saving checkpoint...")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        # Формируем составное имя модели для чекпоинта
-        model_tag = f"{self.args.model_name}_seq{self.args.seq}" + ("_grayscale" if self.args.grayscale else "")
+        model_tag = f"{self.args.model_name}_seq{self.args.seq}" + (
+            "_grayscale" if self.args.grayscale else ""
+        )
         checkpoint = {
             "epoch": epoch,
             "model_state_dict": self.model.state_dict(),
@@ -340,14 +352,10 @@ class Trainer:
         print(f"Checkpoint saved: {filename}")
         return filepath, False
 
-
     def plot_curves(self, epoch):
         print("Generating training plots...")
-
-        # Create a single figure with three subplots in a row
         fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 4))
 
-        # Plot 1: Train and Val Loss
         if self.losses["train"]:
             epochs = list(range(1, len(self.losses["train"]) + 1))
             ax1.plot(epochs, self.losses["train"], "bo-", label="Train Loss")
@@ -358,7 +366,6 @@ class Trainer:
             ax1.legend()
             ax1.grid(True, alpha=0.3)
 
-        # Plot 2: Batch Loss
         if self.losses["batch"]:
             ax2.plot(
                 self.losses["steps"],
@@ -373,7 +380,6 @@ class Trainer:
             ax2.legend()
             ax2.grid(True, alpha=0.3)
 
-        # Plot 3: Learning Rate
         if self.losses["lrs"]:
             ax3.plot(self.losses["steps"], self.losses["lrs"], "g-")
             ax3.set_xlabel("Batch")
@@ -382,17 +388,13 @@ class Trainer:
             ax3.set_yscale("log")
             ax3.grid(True, alpha=0.3)
 
-        # Adjust layout to prevent overlap
         plt.tight_layout()
-
-        # Save the combined plot
         plt.savefig(
             self.save_dir / "plots" / f"training_metrics_epoch_{epoch + 1}.png",
             dpi=150,
             bbox_inches="tight",
         )
         plt.close()
-
         print(f"Training plots saved for epoch \033[93m{epoch + 1}\033[0m")
 
     def validate(self):
@@ -401,9 +403,12 @@ class Trainer:
         total_loss = 0.0
         vis_dir = self.save_dir / "val_vis"
         vis_dir.mkdir(exist_ok=True)
-        max_vis_batches = 5  # Сколько батчей визуализировать
-        use_gru = hasattr(self.model, '_model_type') and self.model._model_type == "VballNetV1c"
-        h0 = None  # Начальное состояние GRU
+        max_vis_batches = 5
+        use_gru = (
+            hasattr(self.model, "_model_type")
+            and self.model._model_type == "VballNetV1c"
+        )
+        h0 = None
         with torch.no_grad():
             val_pbar = tqdm(total=len(self.val_loader), desc="Validation", ncols=100)
             for batch_idx, (inputs, targets) in enumerate(self.val_loader):
@@ -424,43 +429,46 @@ class Trainer:
                 loss = self.criterion(outputs, targets)
                 total_loss += loss.item()
 
-                # --- Визуализация ---
                 if batch_idx < max_vis_batches:
-                    # inputs: (B, C, H, W), outputs: (B, seq, H, W), targets: (B, seq, H, W)
-                    inp = inputs[0].detach().cpu()  # (C, H, W)
-                    pred = outputs[0].detach().cpu()  # (seq, H, W)
-                    gt = targets[0].detach().cpu()   # (seq, H, W)
-                    # Определяем число кадров для визуализации
+                    inp = inputs[0].detach().cpu()
+                    pred = outputs[0].detach().cpu()
+                    gt = targets[0].detach().cpu()
                     n_vis = min(pred.shape[0], gt.shape[0], 9)
                     for i in range(n_vis):
-                        # Входной кадр (если grayscale - берем 1 канал, если RGB - 3)
                         if inp.shape[0] == pred.shape[0]:
-                            # grayscale
-                            rgb = np.stack([inp[i].numpy()]*3, axis=2)
+                            rgb = np.stack([inp[i].numpy()] * 3, axis=2)
                         else:
-                            rgb = inp[i*3:(i+1)*3].permute(1, 2, 0).numpy()
+                            rgb = inp[i * 3 : (i + 1) * 3].permute(1, 2, 0).numpy()
                         rgb = (rgb * 255).astype(np.uint8)
-                        # Предсказанный heatmap
                         pred_hm = pred[i].numpy()
                         pred_hm = (pred_hm * 255).astype(np.uint8)
                         pred_hm_color = cv2.applyColorMap(pred_hm, cv2.COLORMAP_JET)
-                        # Эталонный heatmap
                         gt_hm = gt[i].numpy()
                         gt_hm = (gt_hm * 255).astype(np.uint8)
                         gt_hm_color = cv2.applyColorMap(gt_hm, cv2.COLORMAP_JET)
-                        # Overlay
-                        overlay_pred = cv2.addWeighted(cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), 0.6, pred_hm_color, 0.4, 0)
-                        overlay_gt = cv2.addWeighted(cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), 0.6, gt_hm_color, 0.4, 0)
-                        # Собираем в одну картинку
-                        vis_img = np.vstack([
+                        overlay_pred = cv2.addWeighted(
                             cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR),
-                            overlay_pred,
-                            overlay_gt
-                        ])
+                            0.6,
+                            pred_hm_color,
+                            0.4,
+                            0,
+                        )
+                        overlay_gt = cv2.addWeighted(
+                            cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR),
+                            0.6,
+                            gt_hm_color,
+                            0.4,
+                            0,
+                        )
+                        vis_img = np.vstack(
+                            [
+                                cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR),
+                                overlay_pred,
+                                overlay_gt,
+                            ]
+                        )
                         vis_path = vis_dir / f"val_batch{batch_idx}_frame{i}.jpg"
                         cv2.imwrite(str(vis_path), vis_img)
-                # --- конец визуализации ---
-
                 val_pbar.update(1)
                 val_pbar.set_postfix({"loss": f"{loss.item():.6f}"})
             val_pbar.close()
@@ -473,7 +481,10 @@ class Trainer:
         print(f"Starting training on \033[93m{self.device}\033[0m")
         self.setup_data()
         self.setup_model()
-        use_gru = hasattr(self.model, '_model_type') and self.model._model_type == "VballNetV1c"
+        use_gru = (
+            hasattr(self.model, "_model_type")
+            and self.model._model_type == "VballNetV1c"
+        )
 
         for epoch in range(self.start_epoch, self.args.epochs):
             if self.interrupted:
@@ -485,7 +496,7 @@ class Trainer:
             start_time = time.time()
             self.model.train()
             total_loss = 0.0
-            h0 = None  # Начальное состояние GRU
+            h0 = None
             train_pbar = tqdm(total=len(self.train_loader), desc=f"Training", ncols=100)
             for batch_idx, (inputs, targets) in enumerate(self.train_loader):
                 if self.interrupted:

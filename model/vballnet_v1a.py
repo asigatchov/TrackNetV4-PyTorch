@@ -49,7 +49,8 @@ class MotionPrompt(nn.Module):
             weights = self.gray_scale[idx_list].to(video_seq.device)
             grayscale_video_seq = torch.einsum("btcwh,c->btwh", norm_seq, weights)
         else:  # grayscale mode
-            grayscale_video_seq = video_seq[:, :, 0, :, :]  # Single channel per frame
+            # grayscale_video_seq = video_seq[:, :, 0, :, :]  # Single channel per frame
+            grayscale_video_seq = norm_seq[:, :, 0, :, :]  # Single channel per frame
 
         # Compute central differences for frames t=1 to t=num_frames-2
         attention_map = []
