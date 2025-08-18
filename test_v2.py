@@ -152,6 +152,18 @@ class TrackNetTester:
                 out_dim=out_dim,
                 fusion_layer_type="TypeA"
             ).to(self.device)
+        elif 'VballNetV1d' in self.args.model:
+            in_dim = seq if grayscale else seq * 3
+            out_dim = seq
+            self.model = VballNetV1d(
+                height=288,
+                width=512,
+                in_dim=in_dim,
+                out_dim=out_dim,
+                fusion_layer_type="TypeA"
+            ).to(self.device)
+            self.model._model_type = "VballNetV1d"
+
         elif 'VballNetFastV1' in self.args.model:
             in_dim = seq if grayscale else seq * 3
             out_dim = seq

@@ -12,6 +12,9 @@ from model.tracknet_v4 import TrackNet
 from model.vballnet_v1 import VballNetV1
 from model.vballnet_v1c import VballNetV1c
 from model.vballnet_v1d1 import VballNetV1d
+from model.vballnetfast_v1 import VballNetFastV1
+from model.vballnetfast_v2 import VballNetFastV2
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Volleyball ball detection and tracking")
@@ -82,6 +85,36 @@ def load_model(model_path, input_height=288, input_width=512):
         ).to(device)
         model._model_type = "VballNetV1d"  
     
+    elif 'VballNetFastV1' in basename:
+        if grayscale:
+            in_dim = seq
+            out_dim = seq
+        else:
+            in_dim = seq * 3
+            out_dim = seq
+        model = VballNetFastV1(
+            input_height=input_height,
+            input_width=input_width,
+            in_dim=in_dim,
+            out_dim=out_dim
+        ).to(device)
+        model._model_type = "VballNetFastV1"
+
+    elif 'VballNetFastV2' in basename:
+        if grayscale:
+            in_dim = seq
+            out_dim = seq
+        else:
+            in_dim = seq * 3
+            out_dim = seq
+        model = VballNetFastV2(
+            input_height=input_height,
+            input_width=input_width,
+            in_dim=in_dim,
+            out_dim=out_dim
+        ).to(device)
+        model._model_type = "VballNetFastV2"
+
     elif 'VballNetV1' in basename:
         from model.vballnet_v1 import VballNetV1
         if grayscale:

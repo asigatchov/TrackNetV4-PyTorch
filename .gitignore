@@ -44,3 +44,4 @@ results/
 # Logs
 *.log
 logs/
+.aider*

@@ -99,7 +99,7 @@ class VballNetV1(nn.Module):
     VballNetV1: Motion-enhanced U-Net for volleyball tracking.
     Supports Grayscale (N input frames, N output heatmaps) and RGB (N×3 input channels, N output heatmaps) modes.
     """
-    def __init__(self, height=288, width=512, in_dim=9, out_dim=3, fusion_layer_type="TypeA"):
+    def __init__(self, height=288, width=512, in_dim=9, out_dim=9, fusion_layer_type="TypeA"):
         super().__init__()
         assert fusion_layer_type == "TypeA", "Fusion layer must be 'TypeA'"
         mode = "grayscale" if in_dim == out_dim else "rgb"
@@ -190,7 +190,7 @@ class VballNetV1(nn.Module):
 
 if __name__ == "__main__":
     # Model initialization and testing
-    height, width, in_dim, out_dim = 288, 512, 9, 3
+    height, width, in_dim, out_dim = 288, 512, 9, 9
     model = VballNetV1(height, width, in_dim, out_dim)
     total_params = sum(p.numel() for p in model.parameters())
     print(f"VballNetV1 initialized with {total_params:,} parameters")

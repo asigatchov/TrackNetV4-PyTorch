@@ -1,243 +1,244 @@
 import torch
 import torch.nn as nn
-import numpy as np
-import time
+import torch.nn.functional as F
+from torch_geometric.nn import ChebConv
+import torch_geometric as pyg
 
+# Utility functions
+def rearrange_tensor(input_tensor, order):
+    """Rearranges the dimensions of a tensor according to the specified order."""
+    order = order.upper()
+    assert len(set(order)) == 5, "Order must be a 5 unique character string"
+    assert all(dim in order for dim in "BCHWT"), "Order must contain all of BCHWT"
+    perm = [order.index(dim) for dim in "BTCHW"]
+    return input_tensor.permute(*perm)
 
-class VballNetV1d(nn.Module):
+def power_normalization(input, a, b):
+    """Power normalization function for attention map generation."""
+    return 1 / (1 + torch.exp(-(5 / (0.45 * torch.abs(torch.tanh(a)) + 1e-1)) * (torch.abs(input) - 0.6 * torch.tanh(b))))
+
+# MotionPrompt Module with Sparse Sampling
+class MotionPrompt(nn.Module):
+    """A module for generating attention maps with sparse sampling."""
+    def __init__(self, num_frames, mode="grayscale", penalty_weight=0.0):
+        super().__init__()
+        self.num_frames = num_frames
+        self.mode = mode.lower()
+        assert self.mode in ["rgb", "grayscale"], "Mode must be 'rgb' or 'grayscale'"
+        self.input_permutation = "BTCHW"
+        self.a = nn.Parameter(torch.tensor(0.1))
+        self.b = nn.Parameter(torch.tensor(0.0))
+        self.lambda1 = penalty_weight
+        self.threshold = 0.5  # Threshold for sparse sampling
+
+    def forward(self, video_seq):
+        loss = torch.tensor(0.0, device=video_seq.device)
+        video_seq = rearrange_tensor(video_seq, self.input_permutation)
+        norm_seq = video_seq * 0.225 + 0.45
+
+        grayscale_video_seq = video_seq[:, :, 0, :, :]  # Single channel per frame
+
+        # Compute central differences with sparse sampling
+        attention_map = []
+        rois = []
+        for t in range(self.num_frames):
+            if t == 0:
+                frame_diff = grayscale_video_seq[:, t + 1] - grayscale_video_seq[:, t]
+            elif t == self.num_frames - 1:
+                frame_diff = grayscale_video_seq[:, t] - grayscale_video_seq[:, t - 1]
+            else:
+                frame_diff = (grayscale_video_seq[:, t + 1] - grayscale_video_seq[:, t - 1]) / 2
+            # Sparse sampling: select regions above threshold
+            mask = (torch.abs(frame_diff) > self.threshold).float()
+            attention_map.append(power_normalization(frame_diff, self.a, self.b) * mask)
+            rois.append(mask.nonzero(as_tuple=False))  # ROIs for graph construction
+
+        attention_map = torch.stack(attention_map, dim=1)
+        norm_attention = attention_map.unsqueeze(2)
+
+        if self.training:
+            B, T, H, W = grayscale_video_seq.shape
+            temp_diff = norm_attention[:, 1:] - norm_attention[:, :-1]
+            temporal_loss = torch.sum(temp_diff ** 2) / (H * W * (T - 1) * B)
+            loss = self.lambda1 * temporal_loss
+
+        return attention_map, loss, rois
+
+# Graph Convolution Module
+class GraphConvModule(nn.Module):
+    """Graph convolution module using ChebConv for contextual feature extraction."""
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.conv1 = ChebConv(in_channels, out_channels, K=2)
+        self.conv2 = ChebConv(out_channels, out_channels, K=2)
+        self.relu = nn.ReLU()
+
+    def forward(self, x, edge_index):
+        x = self.conv1(x, edge_index)
+        x = self.relu(x)
+        x = self.conv2(x, edge_index)
+        return self.relu(x)
+
+# FusionLayerTypeA with Multi-scale Features
+class FusionLayerTypeA(nn.Module):
+    """A module that incorporates motion using attention maps with FPN-like fusion."""
+    def __init__(self, num_frames, out_dim):
+        super().__init__()
+        self.num_frames = num_frames
+        self.out_dim = out_dim
+        self.up1 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False)
+        self.up2 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False)
+
+    def forward(self, feature_map, attention_map, enc1, enc2):
+        outputs = []
+        for t in range(min(self.num_frames, self.out_dim)):
+            # Multi-scale fusion
+            up_enc2 = self.up2(enc2)
+            up_enc1 = self.up1(enc1)
+            fused = feature_map[:, t, :, :] * attention_map[:, t, :, :] + up_enc2 + up_enc1
+            outputs.append(fused)
+        return torch.stack(outputs, dim=1)
+
+# VballNetV2 Model
+class VballNetV2(nn.Module):
+    """Enhanced VballNet with graph convolution, FPN, and DeepSORT integration."""
     def __init__(self, height=288, width=512, in_dim=9, out_dim=9):
         super().__init__()
-        self.in_dim = in_dim
-        self.out_dim = out_dim
-        self.hidden_size = 1024  # Увеличено до 1024 для поддержки (64, 8, 8)
+        self.height = height
+        self.width = width
+        num_frames = in_dim
 
-        # Stem: (B*T, 1, 288, 512) → (B*T, 32, 144, 256)
-        self.stem = nn.Sequential(
-            nn.Conv2d(1, 12, kernel_size=3, padding=1),
-            nn.BatchNorm2d(12),
+        # Motion prompt with sparse sampling
+        self.motion_prompt = MotionPrompt(num_frames=num_frames, mode="grayscale")
+
+        # Encoder
+        self.enc1 = nn.Sequential(
+            nn.Conv2d(in_dim, 32, kernel_size=3, padding=1, bias=True),
             nn.ReLU(inplace=True),
-            nn.Conv2d(12, 24, kernel_size=3, padding=1),
-            nn.BatchNorm2d(24),
+            nn.BatchNorm2d(32)
+        )
+        self.enc1_1 = nn.Sequential(
+            nn.Conv2d(32, 32, kernel_size=3, padding=1, bias=True),
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(2),  # 288→144, 512→256
-            nn.Conv2d(24, 32, kernel_size=3, padding=1),
-            nn.BatchNorm2d(32),
+            nn.BatchNorm2d(32)
+        )
+        self.pool1 = nn.MaxPool2d(2, stride=2)
+
+        self.enc2 = nn.Sequential(
+            nn.Conv2d(32, 64, kernel_size=3, padding=1, bias=True),
             nn.ReLU(inplace=True),
+            nn.BatchNorm2d(64)
+        )
+        self.pool2 = nn.MaxPool2d(2, stride=2)
+
+        self.enc3 = nn.Sequential(
+            nn.Conv2d(64, 128, kernel_size=3, padding=1, bias=True),
+            nn.ReLU(inplace=True),
+            nn.BatchNorm2d(128)
         )
 
-        # Фиксированный AvgPool2d
-        self.spatial_pool = nn.AvgPool2d(
-            kernel_size=(18, 32), stride=(18, 32)
-        )  # → (B*T, 32, 8, 8)
+        # Graph convolution (applied to ROIs)
+        self.graph_conv = GraphConvModule(128, 64)
 
-        # Сжатие
-        self.feature_flatten = nn.Linear(32 * 8 * 8, self.hidden_size)  # 2048 → 1024
-
-        # Временная обработка с ONNX-совместимым подходом
-        self.temporal_conv1 = nn.Conv2d(
-            self.hidden_size, self.hidden_size, kernel_size=3, padding=1
+        # Decoder
+        self.up1 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False)
+        self.dec1 = nn.Sequential(
+            nn.Conv2d(128 + 64, 64, kernel_size=3, padding=1, bias=True),
+            nn.ReLU(inplace=True),
+            nn.BatchNorm2d(64)
         )
-        self.temporal_conv2 = nn.Conv2d(
-            self.hidden_size, self.hidden_size, kernel_size=3, padding=1
-        )
-        self.temporal_act = nn.ReLU(inplace=True)
-
-        # Декодер с увеличенными каналами
-        self.hidden_to_features = nn.Linear(self.hidden_size, 64 * 8 * 8)  # 1024 → 4096
-        self.feature_unflatten = nn.Unflatten(1, (64, 8, 8))
-
-        self.upsample = nn.Sequential(
-            nn.ConvTranspose2d(64, 64, kernel_size=4, stride=2, padding=1),  # 8 → 16
-            nn.BatchNorm2d(64),
+        self.up2 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False)
+        self.dec2 = nn.Sequential(
+            nn.Conv2d(64 + 32, 32, kernel_size=3, padding=1, bias=True),
             nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(64, 64, kernel_size=4, stride=2, padding=1),  # 16 → 32
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(64, 64, kernel_size=4, stride=2, padding=1),  # 32 → 64
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(64, 32, kernel_size=4, stride=2, padding=1),  # 64 → 128
-            nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True),
-            nn.Upsample(size=(288, 512), mode="nearest"),
+            nn.BatchNorm2d(32)
         )
 
-        # Skip-connection
-        self.skip_conv = nn.Conv2d(
-            24, 32, kernel_size=1
-        )  # Обновлено для соответствия 32 каналам
+        # Fusion layer with multi-scale
+        self.fusion_layer = FusionLayerTypeA(num_frames=num_frames, out_dim=out_dim)
 
-        # Финальный слой
-        self.final_conv = nn.Conv2d(32, 1, kernel_size=1)
+        # Output layer
+        self.out_conv = nn.Conv2d(32, out_dim, kernel_size=1, padding=0)
 
-    def forward(self, x):
-        B, T, H, W = x.shape
+        # DeepSORT placeholder (to be integrated externally)
+        self.deepsort = None
 
-        if H != 288 or W != 512:
-            raise ValueError(f"Input size must be (288, 512), got ({H}, {W})")
+    def forward(self, imgs_input):
+        # Motion prompt with ROIs
+        residual_maps, loss, rois = self.motion_prompt(imgs_input)
 
-        x = x.view(B * T, 1, H, W)  # (B*T, 1, 288, 512)
+        # Encoder
+        x1 = self.enc1(imgs_input)
+        x1_1 = self.enc1_1(x1)
+        x = self.pool1(x1_1)
 
-        # Skip connection: сохраняем до пулинга (24 каналов, 288x512)
-        x_stem = self.stem[:4](x)  # (B*T, 24, 288, 512)
-        x = self.stem[4:](x_stem)  # (B*T, 32, 144, 256)
+        x2 = self.enc2(x)
+        x = self.pool2(x2)
 
-        # Пространственное сжатие
-        x = self.spatial_pool(x)  # → (B*T, 32, 8, 8)
-        x = x.view(B * T, -1)  # flatten: (B*T, 2048)
-        x = self.feature_flatten(x)  # (B*T, 1024)
-        x = x.view(B, T, -1)  # (B, T, 1024)
+        x = self.enc3(x)
 
-        # Временная обработка (сохранение последовательности)
-        batch_size = x.size(0)
-        h_t = torch.zeros(batch_size, self.hidden_size, 1, 1).to(x.device)
-        lstm_out = []
+        # Graph convolution on ROIs (simplified example)
+        batch_size = imgs_input.shape[0]
+        edge_index = self._create_edge_index(rois, batch_size)  # Placeholder for graph edges
+        x_graph = x.view(batch_size, -1, self.height // 8 * self.width // 8).transpose(1, 2)
+        x_graph = self.graph_conv(x_graph, edge_index)
+        x = x + x_graph.transpose(1, 2).view(batch_size, 128, self.height // 8, self.width // 8)
 
-        for t in range(T):
-            h_prev = h_t if t > 0 else torch.zeros_like(h_t)
-            x_t = (
-                x[:, t : t + 1, :]
-                .transpose(1, 2)
-                .view(batch_size, self.hidden_size, 1, 1)
-            )
-            h_t = self.temporal_conv1(h_prev + x_t)
-            h_t = self.temporal_act(h_t)
-            h_t = self.temporal_conv2(h_t)
-            h_t = self.temporal_act(h_t)
-            lstm_out.append(h_t)
+        # Decoder
+        x = self.up1(x)
+        x = torch.cat([x, x2], dim=1)
+        x = self.dec1(x)
 
-        x = torch.stack(lstm_out, dim=1)  # (B, T, hidden_size, 1, 1)
-        x = x.view(B * T, self.hidden_size, 1, 1)  # (B*T, hidden_size, 1, 1)
+        x = self.up2(x)
+        x = torch.cat([x, x1_1], dim=1)
+        x = self.dec2(x)
 
-        # Распаковка и восстановление пространственных размеров
-        x = x.view(B * T, -1)  # (B*T, hidden_size)
-        x = self.hidden_to_features(x)  # (B*T, 64*8*8)
-        x = self.feature_unflatten(x)  # (B*T, 64, 8, 8)
-        x = self.upsample(x)  # (B*T, 32, 288, 512)
+        # Fusion with multi-scale
+        x = self.fusion_layer(x, residual_maps, x1_1, x2)
 
-        # Skip-connection: 24 → 32 каналов
-        x_skip = self.skip_conv(x_stem)  # (B*T, 32, 288, 512)
-        x = x + x_skip  # residual
+        # Output
+        x = self.out_conv(x)
+        x = torch.sigmoid(x)
 
-        # Финальный слой
-        x = self.final_conv(x)  # (B*T, 1, 288, 512)
-        x = x.reshape(B, T, 288, 512)
+        # Integrate with DeepSORT (placeholder)
+        if self.deepsort is not None:
+            boxes = self._heatmaps_to_boxes(x)  # Convert heatmaps to bounding boxes
+            trajectories = self.deepsort.update(boxes)
+            return x, trajectories, loss
 
-        # Коррекция out_dim
-        if self.out_dim > T:
-            x = torch.cat([x, x[:, -1:].expand(B, self.out_dim - T, 288, 512)], dim=1)
-        elif self.out_dim < T:
-            x = x[:, : self.out_dim]
+        return x, None, loss
 
-        return x
+    def _create_edge_index(self, rois, batch_size):
+        """Create edge index for graph convolution (simplified)."""
+        edge_index = []
+        for b in range(batch_size):
+            for i in range(len(rois[b])):
+                for j in range(i + 1, len(rois[b])):
+                    edge_index.append([rois[b][i][0], rois[b][j][0]])
+        return torch.tensor(edge_index, dtype=torch.long).t().contiguous()
 
+    def _heatmaps_to_boxes(self, heatmaps):
+        """Convert heatmaps to bounding boxes (simplified)."""
+        batch_size, num_frames, h, w = heatmaps.shape
+        boxes = []
+        for b in range(batch_size):
+            for t in range(num_frames):
+                max_val, max_idx = torch.max(heatmaps[b, t].view(-1), dim=0)
+                if max_val > 0.5:  # Threshold for detection
+                    y, x = max_idx // w, max_idx % w
+                    boxes.append([x, y, x + 10, y + 10])  # Placeholder box
+        return torch.tensor(boxes) if boxes else None
 
 if __name__ == "__main__":
-    print("🚀 VballNetTiny_ONNX — модель для ONNX и высокой скорости на CPU\n")
-
-    # Параметры
-    BATCH_SIZE = 1
-    IN_DIM = 9
-    OUT_DIM = 9
-    HEIGHT = 288
-    WIDTH = 512
-    ONNX_PATH = "vballnet_tiny_cpu.onnx"
-
-    # Только CPU для совместимости с ONNX
-    device = torch.device("cpu")
-    print(f"🔧 Устройство: {device}")
-
-    # Инициализация модели
-    model = VballNetV1d(height=HEIGHT, width=WIDTH, in_dim=IN_DIM, out_dim=OUT_DIM).to(
-        device
-    )
-
-    # Подсчёт параметров
+    height, width, in_dim, out_dim = 288, 512, 9, 9
+    model = VballNetV2(height, width, in_dim, out_dim)
     total_params = sum(p.numel() for p in model.parameters())
-    print(f"🧮 Количество параметров: {total_params:,}")
+    print(f"VballNetV2 initialized with {total_params:,} parameters")
 
-    # Тестовый ввод
-    x_test = torch.randn(BATCH_SIZE, IN_DIM, HEIGHT, WIDTH)
-
-    # Проверка forward
-    with torch.no_grad():
-        try:
-            output = model(x_test)
-            print(f"✅ Forward прошёл успешно. Выход: {output.shape}")
-            assert output.shape == (
-                BATCH_SIZE,
-                OUT_DIM,
-                HEIGHT,
-                WIDTH,
-            ), "Неверная форма выхода"
-        except Exception as e:
-            print(f"❌ Ошибка в forward: {e}")
-            raise
-
-    # 📦 ЭКСПОРТ В ONNX
-    print(f"\n📦 Экспорт модели в ONNX: {ONNX_PATH}")
-
-    model.eval()
-    dynamic_axes = {"input": {0: "batch", 1: "time"}, "output": {0: "batch", 1: "time"}}
-
-    try:
-        torch.onnx.export(
-            model,
-            x_test,
-            ONNX_PATH,
-            export_params=True,
-            opset_version=13,
-            do_constant_folding=True,
-            input_names=["input"],
-            output_names=["output"],
-            dynamic_axes=dynamic_axes,
-            verbose=False,
-        )
-        print(f"✅ Успешно экспортировано в {ONNX_PATH}")
-    except Exception as e:
-        print(f"❌ Ошибка экспорта в ONNX: {e}")
-        raise
-
-    # ⏱️ ЗАМЕР СКОРОСТИ В ONNX RUNTIME
-    try:
-        import onnxruntime as ort
-
-        print("\n⏱️  Запуск ONNX Runtime (CPU) для замера скорости...")
-
-        sess_options = ort.SessionOptions()
-        sess_options.intra_op_num_threads = 4
-        sess_options.graph_optimization_level = (
-            ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        )
-
-        ort_session = ort.InferenceSession(
-            ONNX_PATH, sess_options=sess_options, providers=["CPUExecutionProvider"]
-        )
-
-        print(f"✅ ONNX Runtime запущен. Провайдер: {ort_session.get_providers()[0]}")
-
-        x_np = np.random.randn(BATCH_SIZE, IN_DIM, HEIGHT, WIDTH).astype(np.float32)
-
-        for _ in range(10):
-            ort_session.run(None, {"input": x_np})
-
-        n_runs = 100
-        start = time.time()
-        for _ in range(n_runs):
-            ort_session.run(None, {"input": x_np})
-        end = time.time()
-
-        avg_time_ms = (end - start) / n_runs * 1000
-        fps = 1000 / avg_time_ms
-
-        print(f"\n📊 Результаты на CPU:")
-        print(f"   Среднее время: {avg_time_ms:.3f} мс")
-        print(f"   Скорость: {fps:.2f} FPS")
-        print(f"✅ {'Достигнут 40+ FPS' if fps >= 40 else 'Не достигнут 40 FPS'}")
-
-    except ImportError:
-        print("\n⚠️  onnxruntime не установлен. Установи: pip install onnxruntime")
-    except Exception as e:
-        print(f"\n❌ Ошибка ONNX Runtime: {e}")
-
-    print("\n🎉 Модель готова к использованию в production!")
+    test_input = torch.randn(2, in_dim, height, width)
+    test_output, trajectories, loss = model(test_input)
+    print(f"Input shape: {test_input.shape}")
+    print(f"Output shape: {test_output.shape}")
+    print(f"Output range: [{test_output.min():.3f}, {test_output.max():.3f}]")
+    print(f"Loss: {loss.item():.3f}")
+    print("✓ VballNetV2 ready for training!")

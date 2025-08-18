@@ -53,7 +53,7 @@ from model.tracknet_v4 import TrackNet
 from model.vballnet_v1a import VballNetV1 as VballNetV1a
 
 from model.vballnet_v1c import VballNetV1c
-from model.vballnet_v1d1 import VballNetV1d
+from model.vballnet_v1d import VballNetV1d
 from model.vballnetfast_v1 import VballNetFastV1  # Import the fast version
 from model.vballnetfast_v2 import VballNetFastV2  # Import the fast version
 
@@ -273,10 +273,17 @@ class Trainer:
             ).to(self.device)
             self.model._model_type = "VballNetV1a"
 
-        elif self.args.model_name == "VballNetV1d":
-            self.model = VballNetV1d( ).to(self.device)
+
+        elif 'VballNetV1d' in self.args.model_name:
+            self.model = VballNetV1d(
+                height=288,
+                width=512,
+                in_dim=in_dim,
+                out_dim=out_dim,
+            ).to(self.device)
             self.model._model_type = "VballNetV1d"
 
+        
         elif self.args.model_name == "VballNetV1c":
             self.model = VballNetV1c(
                 height=288,
@@ -377,7 +384,9 @@ class Trainer:
 
         # Plot 1: Train and Val Loss
         if self.losses["train"]:
-            epochs = list(range(1, len(self.losses["train"]) + 1))
+            cnt = len(self.losses["train"])
+            start = 1
+            epochs = list(range(start, cnt + 1))
             ax1.plot(epochs, self.losses["train"], "bo-", label="Train Loss")
             ax1.plot(epochs, self.losses["val"], "ro-", label="Val Loss")
             ax1.set_xlabel("Epoch")
