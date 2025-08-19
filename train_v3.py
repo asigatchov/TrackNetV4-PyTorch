@@ -51,7 +51,7 @@ import cv2
 from model.tracknet_v4 import TrackNet
 from model.vballnet_v1a import VballNetV1 as VballNetV1a
 from model.vballnet_v1c import VballNetV1c
-from model.vballnet_v1d import VballNetV1d
+from model.vballnet_v1d import VballNetV1d as VballNetV1d
 
 
 def parse_args():

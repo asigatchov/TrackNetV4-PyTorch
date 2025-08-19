@@ -53,7 +53,7 @@ from model.tracknet_v4 import TrackNet
 from model.vballnet_v1a import VballNetV1 as VballNetV1a
 
 from model.vballnet_v1c import VballNetV1c
-from model.vballnet_v1d import VballNetV1d
+from model.vballnet_v1d import VballNetV1d as VballNetV1d  # Import the new version
 from model.vballnetfast_v1 import VballNetFastV1  # Import the fast version
 from model.vballnetfast_v2 import VballNetFastV2  # Import the fast version
 
@@ -283,7 +283,7 @@ class Trainer:
             ).to(self.device)
             self.model._model_type = "VballNetV1d"
 
-        
+
         elif self.args.model_name == "VballNetV1c":
             self.model = VballNetV1c(
                 height=288,
@@ -304,7 +304,7 @@ class Trainer:
                 dropout_p=0.2
             ).to(self.device)
             self.model._model_type = "VballNetFastV1"
-        
+
         elif 'VballNetFastV2' in self.args.model_name:
             self.model = VballNetFastV2(
                 input_height=288,
