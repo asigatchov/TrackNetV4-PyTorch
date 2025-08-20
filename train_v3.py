@@ -50,6 +50,7 @@ import cv2
 # Choose the version of TrackNet model you want to use
 from model.tracknet_v4 import TrackNet
 from model.vballnet_v1a import VballNetV1 as VballNetV1a
+from model.vballnet_v2 import VballNetV2 
 from model.vballnet_v1c import VballNetV1c
 from model.vballnet_v1d import VballNetV1d as VballNetV1d
 
@@ -94,6 +95,7 @@ def parse_args():
             "VballNetV1b",
             "VballNetV1c",
             "VballNetV1d",
+            "VballNetV2",
         ],
     )
     parser.add_argument("--grayscale", action="store_true")
@@ -280,6 +282,15 @@ class Trainer:
                 fusion_layer_type="TypeA",
             ).to(self.device)
             self.model._model_type = "VballNetV1a"
+
+        elif self.args.model_name == "VballNetV2":
+            self.model = VballNetV2(
+                height=288,
+                width=512,
+                in_dim=in_dim,
+                out_dim=out_dim,
+            ).to(self.device)
+            self.model._model_type = "VballNetV2"
 
         elif self.args.model_name == "VballNetV1d":
             self.model = VballNetV1d().to(self.device)

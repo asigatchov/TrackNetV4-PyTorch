@@ -10,6 +10,7 @@ import torch
 
 from model.tracknet_v4 import TrackNet
 from model.vballnet_v1 import VballNetV1
+from model.vballnet_v2 import VballNetV2
 from model.vballnet_v1c import VballNetV1c
 from model.vballnet_v1d import VballNetV1d
 from model.vballnetfast_v1 import VballNetFastV1
@@ -84,6 +85,22 @@ def load_model(model_path, input_height=288, input_width=512):
             out_dim=out_dim
         ).to(device)
         model._model_type = "VballNetV1d"  
+    
+    elif 'VballNetV2' in basename:
+        if grayscale:
+            in_dim = seq
+            out_dim = seq
+        else:
+            in_dim = seq * 3
+            out_dim = seq
+
+        model = VballNetV2(
+            height=input_height,
+            width=input_width,
+            in_dim=in_dim,
+            out_dim=out_dim
+        ).to(device)
+        model._model_type = "VballNetV2"  
     
     elif 'VballNetFastV1' in basename:
         if grayscale:
@@ -227,7 +244,7 @@ def postprocess_output(output, threshold=0.55, input_height=288, input_width=512
     return results
 
 def visualize_heatmaps(output, frame_index, input_height=288, input_width=512):
-    for frame_idx in range(3):
+    for frame_idx in range(3,7):
         heatmap = output[frame_idx, :, :]
         heatmap_norm = cv2.normalize(heatmap, None, 0, 255, cv2.NORM_MINMAX)
         heatmap_uint8 = heatmap_norm.astype(np.uint8)
@@ -350,6 +367,8 @@ def main():
                         if cv2.waitKey(1) & 0xFF == ord('q'):
                             stop = True
                             break
+    
+                    visualize_heatmaps(output, 3)
                     if out_writer is not None:
                         out_writer.write(vis_frame)
 
