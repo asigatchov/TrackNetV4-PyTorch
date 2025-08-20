@@ -95,7 +95,7 @@ class FusionLayerTypeA(nn.Module):
         return torch.stack(outputs, dim=1)
 
 # VballNetV1 Model
-class VballNetV1(nn.Module):
+class VballNetV1a(nn.Module):
     """
     VballNetV1: Motion-enhanced U-Net for volleyball tracking.
     Supports Grayscale (N input frames, N output heatmaps) and RGB (N×3 input channels, N output heatmaps) modes.

@@ -43,15 +43,17 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
 from model.loss import WeightedBinaryCrossEntropy
-from preprocessing.tracknet_datasetv3 import FrameHeatmapDataset
+from preprocessing.tracknet_datasetv2 import FrameHeatmapDataset
 import os
 import numpy as np
 import cv2
 # Choose the version of TrackNet model you want to use
 from model.tracknet_v4 import TrackNet
 # from model.vballnet_v1 import VballNetV1 as VballNetV1a
-from model.vballnet_v1a import VballNetV1 as VballNetV1a
+from model.vballnet_v1a import VballNetV1a as VballNetV1a
 
+from model.vballnet_v2 import VballNetV2 
+from model.vballnet_v3 import VballNetV3 
 from model.vballnet_v1c import VballNetV1c
 from model.vballnet_v1d import VballNetV1d as VballNetV1d  # Import the new version
 from model.vballnetfast_v1 import VballNetFastV1  # Import the fast version
@@ -91,7 +93,7 @@ def parse_args():
         "--model_name",
         type=str,
         default="TrackNet",
-        choices=["TrackNet", "VballNetV1a", "VballNetV1b", "VballNetV1c", "VballNetV1d", "VballNetFastV1","VballNetFastV2"],
+        choices=["TrackNet",  "VballNetV2", "VballNetV3", "VballNetV1a", "VballNetV1b", "VballNetV1c", "VballNetV1d", "VballNetFastV1","VballNetFastV2"],
     )
     parser.add_argument('--grayscale', action='store_true')
     parser.add_argument('--seq', type=int, default=3)
@@ -283,6 +285,15 @@ class Trainer:
             ).to(self.device)
             self.model._model_type = "VballNetV1d"
 
+        elif 'VballNetV3' in self.args.model_name:
+            self.model = VballNetV3(
+                height=288,
+                width=512,
+                in_dim=in_dim,
+                out_dim=out_dim,
+            ).to(self.device)
+            self.model._model_type = "VballNetV3"
+
 
         elif self.args.model_name == "VballNetV1c":
             self.model = VballNetV1c(
@@ -437,7 +448,7 @@ class Trainer:
         self.model.eval()
         total_loss = 0.0
         vis_dir = self.save_dir / "val_vis"
-        vis_dir.mkdir(exist_ok=True)
+        
         max_vis_batches = 5  # Сколько батчей визуализировать
         use_gru = hasattr(self.model, '_model_type') and self.model._model_type == "VballNetV1c"
         h0 = None  # Начальное состояние GRU
