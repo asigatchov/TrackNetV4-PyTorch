@@ -52,8 +52,8 @@ from model.tracknet_v4 import TrackNet
 # from model.vballnet_v1 import VballNetV1 as VballNetV1a
 from model.vballnet_v1a import VballNetV1a as VballNetV1a
 
-from model.vballnet_v2 import VballNetV2 
-from model.vballnet_v3 import VballNetV3 
+from model.vballnet_v2 import VballNetV2
+from model.vballnet_v3 import VballNetV3
 from model.vballnet_v1c import VballNetV1c
 from model.vballnet_v1d import VballNetV1d as VballNetV1d  # Import the new version
 from model.vballnetfast_v1 import VballNetFastV1  # Import the fast version
@@ -97,6 +97,8 @@ def parse_args():
     )
     parser.add_argument('--grayscale', action='store_true')
     parser.add_argument('--seq', type=int, default=3)
+    parser.add_argument('--alpha', type=float, default=-1, help='alpha of sample mixup, -1 means no mixup')
+
 
     args = parser.parse_args()
 
@@ -105,6 +107,30 @@ def parse_args():
         args.lr = lr_defaults[args.optimizer]
 
     return args
+
+
+def mixup(x, y, alpha=0.5):
+    """Returns mixed inputs, pairs of targets.
+
+    Args:
+        x (torch.Tensor): Input tensor
+        y (torch.Tensor): Target tensor
+        alpha (float): Alpha of beta distribution
+
+    Returns:
+        x_mix (torch.Tensor): Mixed input tensor
+        y_mix (torch.Tensor): Mixed target tensor
+    """
+
+    batch_size = x.size()[0]
+    lamb = np.random.beta(alpha, alpha, size=batch_size)
+    lamb = np.maximum(lamb, 1 - lamb)
+    lamb = torch.from_numpy(lamb[:, None, None, None]).float().to(x.device)
+    index = torch.randperm(batch_size)
+    x_mix = x * lamb + x[index] * (1 - lamb)
+    y_mix = y * lamb + y[index] * (1 - lamb)
+
+    return x_mix, y_mix
 
 
 class Trainer:
@@ -448,7 +474,7 @@ class Trainer:
         self.model.eval()
         total_loss = 0.0
         vis_dir = self.save_dir / "val_vis"
-        
+
         vis_dir.mkdir(exist_ok=True)
         max_vis_batches = 5  # Сколько батчей визуализировать
         use_gru = hasattr(self.model, '_model_type') and self.model._model_type == "VballNetV1c"
@@ -548,6 +574,11 @@ class Trainer:
                     return
 
                 inputs, targets = inputs.to(self.device), targets.to(self.device)
+                # --- MIXUP augmentation ---
+                if self.args.alpha is not None and self.args.alpha > 0:
+                    inputs, targets = mixup(inputs, targets, self.args.alpha)
+                # --- END MIXUP ---
+
                 self.optimizer.zero_grad()
                 if use_gru:
                     try:
