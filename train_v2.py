@@ -449,6 +449,7 @@ class Trainer:
         total_loss = 0.0
         vis_dir = self.save_dir / "val_vis"
         
+        vis_dir.mkdir(exist_ok=True)
         max_vis_batches = 5  # Сколько батчей визуализировать
         use_gru = hasattr(self.model, '_model_type') and self.model._model_type == "VballNetV1c"
         h0 = None  # Начальное состояние GRU
